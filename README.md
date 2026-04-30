@@ -78,13 +78,8 @@ pip install -r requirements.txt
 **ffmpeg：**
 
 - Windows：从 [ffmpeg.org](https://ffmpeg.org/download.html) 下载，解压后将 `bin` 目录添加到系统 PATH
-- Windows（winget，推荐）：`winget install Gyan.FFmpeg`
-- Windows（scoop）：`scoop install ffmpeg`
-- Windows（chocolatey）：`choco install ffmpeg`
 - macOS：`brew install ffmpeg`
 - Linux (Debian/Ubuntu)：`sudo apt install ffmpeg`
-
-> Windows 用户也可从 [ffmpeg.org](https://ffmpeg.org/download.html) 手动下载，解压后将 `bin` 目录添加到系统 PATH。
 
 **Claude Code CLI（可选，AI 摘要功能需要）：**
 
@@ -93,6 +88,8 @@ npm install -g @anthropic-ai/claude-code
 ```
 
 安装后运行 `claude --version` 确认可用，并按提示完成认证。
+
+> 如果使用 Python 虚拟环境，请在虚拟环境激活状态下安装 Claude CLI，否则可能找不到 `claude` 命令。
 
 ## 使用方法
 
