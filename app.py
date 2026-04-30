@@ -85,7 +85,7 @@ def get_model():
         from funasr import AutoModel
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        print(f"正在加载 FunASR 模型 (设备: {device})...")
+        print(f"正在加载 EchoScribe 模型 (设备: {device})...")
         funasr_model = AutoModel(
             model="paraformer-zh",
             vad_model="fsmn-vad",
@@ -93,7 +93,7 @@ def get_model():
             device=device,
             disable_update=True,
         )
-        print("FunASR 模型加载完成。")
+        print("EchoScribe 模型加载完成。")
     return funasr_model
 
 
@@ -744,7 +744,7 @@ def api_save_config():
 
 if __name__ == "__main__":
     print("=" * 50)
-    print("音视频转写 + AI 总结")
+    print("EchoScribe - AI 音视频转写")
     print("=" * 50)
     print("访问 http://localhost:5000 开始使用")
     print(f"LLM 配置: {CONFIG_PATH}")

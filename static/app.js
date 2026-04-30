@@ -673,7 +673,7 @@ document.getElementById("save-llm-config").addEventListener("click", async () =>
 // ============================================================
 function getExportSettings() {
     const format = document.querySelector('input[name="export-format"]:checked')?.value || "md";
-    const prefix = document.getElementById("export-prefix")?.value || "FlyCut";
+    const prefix = document.getElementById("export-prefix")?.value || "EchoScribe";
     return { format, prefix };
 }
 

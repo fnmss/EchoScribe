@@ -1,4 +1,4 @@
-# FlyCut - AI 音视频转写
+# EchoScribe - AI 音视频转写
 
 基于 [FunASR](https://github.com/modelscope/FunASR) 的音视频转写 Web 应用，支持从 URL 或本地文件导入音视频，自动生成带时间戳的文字转写，并通过 Claude AI 进行智能摘要和问答分析。
 
@@ -26,8 +26,8 @@
 ### 1. 克隆项目
 
 ```bash
-git clone https://github.com/your-username/FunASR.git
-cd FunASR
+git clone https://github.com/your-username/EchoScribe.git
+cd EchoScribe
 ```
 
 ### 2. 创建并激活 Python 虚拟环境
