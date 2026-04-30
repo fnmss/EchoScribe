@@ -23,7 +23,7 @@ os.makedirs(MEDIA_DIR, exist_ok=True)
 CONFIG_PATH = os.path.expanduser("~/.funasr_config.json")
 
 DEFAULT_CONFIG = {
-    "llm_backend": "claude_cli",
+    "llm_backend": "custom_api",
     "custom_api": {
         "format": "openai",
         "base_url": "",
@@ -385,87 +385,51 @@ def truncate_text(text):
 def call_llm(prompt):
     """统一 LLM 调用入口，根据配置分发到不同后端。"""
     cfg = load_config()
-    backend = cfg.get("llm_backend", "claude_cli")
+    backend = cfg.get("llm_backend", "custom_api")
 
-    if backend == "claude_cli":
-        return _call_cli("claude", prompt, ["--print"])
-    elif backend == "codex_cli":
-        return _call_codex(prompt)
-    elif backend == "custom_api":
-        return _call_custom_api(prompt, cfg.get("custom_api", {}))
-    else:
-        raise RuntimeError(f"未知的 LLM 后端: {backend}")
+    try:
+        if backend == "claude_cli":
+            return _call_claude_cli(prompt)
+        elif backend == "custom_api":
+            return _call_custom_api(prompt, cfg.get("custom_api", {}))
+        else:
+            raise RuntimeError(f"未知的 LLM 后端: {backend}")
+    except RuntimeError as e:
+        raise RuntimeError(
+            f"AI 后端 ({backend}) 调用失败: {e}\n"
+            f"请在页面右上角「设置」中切换到其他可用的 AI 后端。"
+        )
 
 
-def find_cmd(name):
-    """查找 CLI 命令的完整路径。"""
+def _call_claude_cli(prompt):
+    """通过 claude --print 调用。"""
     if os.name == "nt":
         for path_dir in os.environ.get("PATH", "").split(os.pathsep):
-            cmd_path = os.path.join(path_dir, f"{name}.cmd")
-            if os.path.exists(cmd_path):
-                return cmd_path
-    cmd_path = shutil.which(name)
-    if cmd_path:
-        return cmd_path
-    raise RuntimeError(f"未找到 {name} 命令，请确保已安装并在 PATH 中。")
-
-
-def _call_cli(cmd_name, prompt, args):
-    """通过 CLI 命令调用 LLM（stdin 模式）。"""
-    cmd = find_cmd(cmd_name)
+            cmd = os.path.join(path_dir, "claude.cmd")
+            if os.path.exists(cmd):
+                break
+        else:
+            cmd = shutil.which("claude")
+    else:
+        cmd = shutil.which("claude")
+    if not cmd:
+        raise RuntimeError("未找到 claude 命令，请确保 Claude CLI 已安装并在 PATH 中。")
     try:
         result = subprocess.run(
-            [cmd] + args,
-            input=prompt,
-            capture_output=True,
-            text=True,
-            timeout=300,
-            encoding="utf-8",
+            [cmd, "--print"],
+            input=prompt, capture_output=True, text=True, timeout=300, encoding="utf-8",
         )
         if result.returncode != 0:
-            raise RuntimeError(f"{cmd_name} CLI 错误: {result.stderr}")
+            raise RuntimeError(f"Claude CLI 错误: {result.stderr}")
         return result.stdout.strip()
     except FileNotFoundError:
-        raise RuntimeError(f"未找到 {cmd_name} 命令，请确保已安装并在 PATH 中。")
+        raise RuntimeError("未找到 claude 命令，请确保 Claude CLI 已安装并在 PATH 中。")
     except subprocess.TimeoutExpired:
-        raise RuntimeError(f"{cmd_name} CLI 响应超时（5分钟）")
-
-
-def _call_codex(prompt):
-    """通过 codex exec 调用（输出写入临时文件以避免状态信息混杂）。"""
-    cmd = find_cmd("codex")
-    tmpfile = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
-    tmpfile.close()
-    try:
-        result = subprocess.run(
-            [cmd, "exec", "--ephemeral", "--full-auto", "--color", "never", "-o", tmpfile.name],
-            input=prompt,
-            capture_output=True,
-            text=True,
-            timeout=300,
-            encoding="utf-8",
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"Codex CLI 错误: {result.stderr}")
-        with open(tmpfile.name, "r", encoding="utf-8") as f:
-            output = f.read().strip()
-        if not output:
-            raise RuntimeError("Codex CLI 返回空内容")
-        return output
-    except FileNotFoundError:
-        raise RuntimeError("未找到 codex 命令，请确保 Codex CLI 已安装并在 PATH 中。")
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("Codex CLI 响应超时（5分钟）")
-    finally:
-        try:
-            os.unlink(tmpfile.name)
-        except OSError:
-            pass
+        raise RuntimeError("Claude CLI 响应超时（5分钟）")
 
 
 def _call_custom_api(prompt, api_cfg):
-    """通过自定义 API 调用 LLM。"""
-    fmt = api_cfg.get("format", "openai")
+    """通过自定义 API 调用 LLM（OpenAI 兼容格式）。"""
     base_url = api_cfg.get("base_url", "").rstrip("/")
     api_key = api_cfg.get("api_key", "")
     model = api_cfg.get("model", "")
@@ -473,14 +437,6 @@ def _call_custom_api(prompt, api_cfg):
     if not base_url:
         raise RuntimeError("自定义 API 未配置 Base URL，请在设置中填写。")
 
-    if fmt == "openai":
-        return _call_openai_api(base_url, api_key, model, prompt)
-    else:
-        return _call_claude_api(base_url, api_key, model, prompt)
-
-
-def _call_openai_api(base_url, api_key, model, prompt):
-    """调用 OpenAI 兼容 API。"""
     url = f"{base_url}/v1/chat/completions"
     headers = {"Content-Type": "application/json"}
     if api_key:
@@ -492,33 +448,15 @@ def _call_openai_api(base_url, api_key, model, prompt):
     }
     try:
         resp = requests.post(url, json=payload, headers=headers, timeout=300)
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            try:
+                err = resp.json()
+                msg = err.get("error", {}).get("message", "") or str(err)
+            except Exception:
+                msg = resp.text[:500]
+            raise RuntimeError(f"API 返回 {resp.status_code}: {msg}")
         data = resp.json()
         return data["choices"][0]["message"]["content"].strip()
-    except requests.exceptions.Timeout:
-        raise RuntimeError("自定义 API 响应超时（5分钟）")
-    except requests.exceptions.RequestException as e:
-        raise RuntimeError(f"自定义 API 请求失败: {e}")
-    except (KeyError, IndexError) as e:
-        raise RuntimeError(f"自定义 API 响应格式异常: {e}")
-
-
-def _call_claude_api(base_url, api_key, model, prompt):
-    """调用 Claude 兼容 API。"""
-    url = f"{base_url}/v1/messages"
-    headers = {"Content-Type": "application/json", "anthropic-version": "2023-06-01"}
-    if api_key:
-        headers["x-api-key"] = api_key
-    payload = {
-        "model": model,
-        "max_tokens": 4096,
-        "messages": [{"role": "user", "content": prompt}],
-    }
-    try:
-        resp = requests.post(url, json=payload, headers=headers, timeout=300)
-        resp.raise_for_status()
-        data = resp.json()
-        return data["content"][0]["text"].strip()
     except requests.exceptions.Timeout:
         raise RuntimeError("自定义 API 响应超时（5分钟）")
     except requests.exceptions.RequestException as e:

@@ -406,7 +406,12 @@ function showMindmapPlaceholder(msg) {
 
 // Mind map controls
 document.getElementById("mindmap-fit").addEventListener("click", () => {
-    renderMindMap();
+    const svg = document.querySelector("#mindmap-container svg");
+    if (svg && svg.dataset.imported === "true") {
+        svg.style.transform = "scale(1)";
+    } else {
+        renderMindMap();
+    }
 });
 
 document.getElementById("mindmap-zoom-in").addEventListener("click", () => {
@@ -561,7 +566,8 @@ document.getElementById("file-form").addEventListener("submit", async (e) => {
 // ============================================================
 // Settings
 // ============================================================
-document.getElementById("settings-btn").addEventListener("click", () => {
+document.getElementById("settings-btn").addEventListener("click", (e) => {
+    if (window.__justDragged) return;
     document.getElementById("settings-modal").style.display = "flex";
     loadLLMConfig();
 });
@@ -570,8 +576,11 @@ document.getElementById("settings-close").addEventListener("click", () => {
     document.getElementById("settings-modal").style.display = "none";
 });
 
+document.getElementById("settings-modal").addEventListener("mousedown", (e) => {
+    window.__modalMouseDownOnOverlay = (e.target === e.currentTarget);
+});
 document.getElementById("settings-modal").addEventListener("click", (e) => {
-    if (e.target === e.currentTarget) {
+    if (e.target === e.currentTarget && window.__modalMouseDownOnOverlay) {
         e.currentTarget.style.display = "none";
     }
 });
@@ -580,7 +589,7 @@ document.getElementById("settings-modal").addEventListener("click", (e) => {
 document.querySelectorAll('input[name="llm-backend"]').forEach((radio) => {
     radio.addEventListener("change", () => {
         const apiSettings = document.getElementById("custom-api-settings");
-        apiSettings.style.display = radio.value === "custom_api" && radio.checked ? "block" : "none";
+        apiSettings.style.display = radio.value === "custom_api" ? "block" : "none";
     });
 });
 
@@ -607,8 +616,6 @@ async function loadLLMConfig() {
 
         // Set custom API fields
         const api = cfg.custom_api || {};
-        const formatRadio = document.querySelector(`input[name="api-format"][value="${api.format || "openai"}"]`);
-        if (formatRadio) formatRadio.checked = true;
         document.getElementById("api-base-url").value = api.base_url || "";
         document.getElementById("api-model").value = api.model || "";
         document.getElementById("api-key").value = "";
@@ -634,7 +641,6 @@ document.getElementById("save-llm-config").addEventListener("click", async () =>
     const payload = {
         llm_backend: backend,
         custom_api: {
-            format: document.querySelector('input[name="api-format"]:checked')?.value || "openai",
             base_url: document.getElementById("api-base-url").value.trim(),
             model: document.getElementById("api-model").value.trim(),
         },
@@ -732,14 +738,70 @@ function exportMindMap() {
     const filename = `${prefix}_mindmap_${safeTitle}.svg`;
 
     const svgData = new XMLSerializer().serializeToString(svg);
-    const svgWithNs = svgData.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
+    // Avoid duplicate xmlns: only add if missing
+    const svgWithNs = svgData.includes('xmlns="http://www.w3.org/2000/svg"')
+        ? svgData
+        : svgData.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
     downloadFile(svgWithNs, filename, "image/svg+xml;charset=utf-8");
+}
+
+function openLocalSvg() {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".svg";
+    input.onchange = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+            const container = document.getElementById("mindmap-container");
+            container.innerHTML = ev.target.result;
+            const svg = container.querySelector("svg");
+            if (!svg) return;
+            svg.style.width = "100%";
+            svg.style.height = "100%";
+            svg.style.cursor = "grab";
+            svg.dataset.imported = "true";
+
+            // Wheel zoom
+            svg.addEventListener("wheel", (we) => {
+                we.preventDefault();
+                const cur = parseFloat(svg.style.transform?.match(/scale\(([^)]+)\)/)?.[1] || 1);
+                const next = we.deltaY < 0 ? cur * 1.1 : cur / 1.1;
+                svg.style.transform = `scale(${next})`;
+                svg.style.transformOrigin = "center center";
+            }, { passive: false });
+
+            // Drag pan
+            let dragging = false, startX, startY, origX = 0, origY = 0;
+            svg.addEventListener("mousedown", (me) => {
+                dragging = true;
+                startX = me.clientX - origX;
+                startY = me.clientY - origY;
+                svg.style.cursor = "grabbing";
+            });
+            window.addEventListener("mousemove", (me) => {
+                if (!dragging) return;
+                origX = me.clientX - startX;
+                origY = me.clientY - startY;
+                const scale = parseFloat(svg.style.transform?.match(/scale\(([^)]+)\)/)?.[1] || 1);
+                svg.style.transform = `translate(${origX}px, ${origY}px) scale(${scale})`;
+            });
+            window.addEventListener("mouseup", () => {
+                dragging = false;
+                svg.style.cursor = "grab";
+            });
+        };
+        reader.readAsText(file);
+    };
+    input.click();
 }
 
 // Wire up export buttons
 document.getElementById("export-summary").addEventListener("click", exportSummary);
 document.getElementById("export-transcription").addEventListener("click", exportTranscription);
 document.getElementById("export-mindmap").addEventListener("click", exportMindMap);
+document.getElementById("open-svg").addEventListener("click", openLocalSvg);
 
 // ============================================================
 // Resizable panels
@@ -788,6 +850,8 @@ document.getElementById("export-mindmap").addEventListener("click", exportMindMa
             document.body.style.userSelect = "";
             document.removeEventListener("mousemove", onMouseMove);
             document.removeEventListener("mouseup", onMouseUp);
+            window.__justDragged = true;
+            setTimeout(() => { window.__justDragged = false; }, 200);
 
             // Save ratio
             const cols = getComputedStyle(dashboard).gridTemplateColumns.split(/\s+/).map(parseFloat);

@@ -205,6 +205,9 @@
                                 <button class="icon-btn" id="export-mindmap" title="导出思维导图">
                                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                                 </button>
+                                <button class="icon-btn" id="open-svg" title="打开本地 SVG">
+                                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 19a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h4l2 3h9a2 2 0 0 1 2 2v1"/><path d="M9 17h10.5a1.5 1.5 0 0 0 1.46-1.18l1.5-6A1.5 1.5 0 0 0 19.5 8H14l-1.5 3"/></svg>
+                                </button>
                             </div>
                         </div>
                         <div class="mindmap-body" id="mindmap-wrap">
@@ -252,20 +255,12 @@
                     <div class="setting-group">
                         <label class="setting-label">AI 后端</label>
                         <div class="setting-row">
-                            <label class="radio-label"><input type="radio" name="llm-backend" value="claude_cli" checked> Claude CLI</label>
-                            <label class="radio-label"><input type="radio" name="llm-backend" value="codex_cli"> Codex CLI</label>
-                            <label class="radio-label"><input type="radio" name="llm-backend" value="custom_api"> 自定义 API</label>
+                            <label class="radio-label"><input type="radio" name="llm-backend" value="custom_api" checked> 自定义 API</label>
+                            <label class="radio-label"><input type="radio" name="llm-backend" value="claude_cli"> Claude CLI</label>
                         </div>
                     </div>
 
-                    <div id="custom-api-settings" style="display:none;">
-                        <div class="setting-group">
-                            <label class="setting-label">API 格式</label>
-                            <div class="setting-row">
-                                <label class="radio-label"><input type="radio" name="api-format" value="openai" checked> OpenAI 兼容</label>
-                                <label class="radio-label"><input type="radio" name="api-format" value="claude"> Claude 兼容</label>
-                            </div>
-                        </div>
+                    <div id="custom-api-settings">
                         <div class="setting-group">
                             <label class="setting-label">Base URL</label>
                             <input type="text" id="api-base-url" class="setting-input" placeholder="https://api.openai.com 或 http://localhost:11434">
