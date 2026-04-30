@@ -103,6 +103,170 @@ function showLoading(text) {
 
 function hideLoading() {
     document.getElementById("loading").style.display = "none";
+    // 恢复默认 CSS 动画，供下次使用
+    const barFill = document.querySelector(".loading-bar-fill");
+    if (barFill) {
+        barFill.style.animation = "";
+        barFill.style.width = "";
+        barFill.style.transform = "";
+    }
+}
+
+function resetProgressUI() {
+    const barFill = document.querySelector(".loading-bar-fill");
+    if (barFill) {
+        barFill.style.animation = "none";
+        barFill.style.width = "0%";
+        barFill.style.transform = "none";
+    }
+    // 先显示默认的 4 个阶段，收到第一个 SSE 事件后会动态调整
+    const stagesEl = document.getElementById("loading-stages");
+    if (stagesEl) {
+        stagesEl.innerHTML = `
+            <span class="loading-stage" data-step="1">模型加载</span>
+            <span class="loading-stage-sep"></span>
+            <span class="loading-stage" data-step="2">下载音频</span>
+            <span class="loading-stage-sep"></span>
+            <span class="loading-stage" data-step="3">音频转写</span>
+            <span class="loading-stage-sep"></span>
+            <span class="loading-stage" data-step="4">AI 总结</span>
+        `;
+    }
+}
+
+function updateProgress(event) {
+    const loadingText = document.getElementById("loading-text");
+    const loadingBarFill = document.querySelector(".loading-bar-fill");
+
+    if (event.text) {
+        loadingText.textContent = event.text;
+    }
+
+    // 更新进度条
+    if (event.progress != null) {
+        // 下载有真实百分比
+        loadingBarFill.style.animation = "none";
+        loadingBarFill.style.width = event.progress + "%";
+        loadingBarFill.style.transform = "none";
+    } else if (event.step && event.total) {
+        // 阶段性进度：计算当前步骤的基础百分比
+        const basePct = ((event.step - 1) / event.total) * 100;
+        const stepPct = (1 / event.total) * 100;
+        loadingBarFill.style.animation = "none";
+        loadingBarFill.style.width = (basePct + stepPct * 0.3) + "%";
+        loadingBarFill.style.transform = "none";
+    }
+
+    // 更新阶段指示器
+    if (event.step && event.total) {
+        updateStageIndicators(event.step, event.total, event.stage);
+    }
+}
+
+function updateStageIndicators(currentStep, totalSteps, currentStage) {
+    const stagesEl = document.getElementById("loading-stages");
+    if (!stagesEl) return;
+
+    // 首次收到事件时，根据后端 totalSteps 动态重建阶段标签
+    if (!stagesEl._built || stagesEl._totalSteps !== totalSteps) {
+        stagesEl._built = true;
+        stagesEl._totalSteps = totalSteps;
+        const isUrlTab = document.getElementById("tab-url").classList.contains("active");
+        const labels = totalSteps === 5
+            ? ["模型加载", "下载音频", "音频转写", "AI 总结"]
+            : isUrlTab
+                ? ["下载音频", "音频转写", "AI 总结"]
+                : ["格式转换", "音频转写", "AI 总结"];
+        stagesEl.innerHTML = labels.map((label, i) => {
+            const sep = i < labels.length - 1 ? '<span class="loading-stage-sep"></span>' : '';
+            return `<span class="loading-stage" data-step="${i + 1}">${label}</span>${sep}`;
+        }).join('');
+    }
+
+    const stages = stagesEl.querySelectorAll(".loading-stage");
+    stages.forEach((el, idx) => {
+        const step = idx + 1;
+        el.classList.remove("active", "completed");
+        if (step < currentStep) {
+            el.classList.add("completed");
+        } else if (step === currentStep) {
+            el.classList.add("active");
+        }
+    });
+}
+
+async function fetchSSE(url, body, onEvent) {
+    const isFormData = body instanceof FormData;
+    const resp = await fetch(url, {
+        method: "POST",
+        headers: isFormData ? {} : { "Content-Type": "application/json" },
+        body: isFormData ? body : JSON.stringify(body),
+    });
+
+    if (!resp.ok) {
+        let errMsg = "HTTP " + resp.status;
+        try {
+            const err = await resp.json();
+            errMsg = err.error || errMsg;
+        } catch (_) {}
+        throw new Error(errMsg);
+    }
+
+    // 兼容不支持 ReadableStream 的环境
+    if (!resp.body || typeof resp.body.getReader !== "function") {
+        const text = await resp.text();
+        const lines = text.split("\n");
+        for (const line of lines) {
+            if (line.startsWith("data: ")) {
+                const jsonStr = line.slice(6);
+                if (jsonStr.trim()) {
+                    onEvent(JSON.parse(jsonStr));
+                }
+            }
+        }
+        return;
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+
+            const lines = buffer.split("\n");
+            buffer = lines.pop(); // 保留不完整的行
+
+            for (const line of lines) {
+                if (line.startsWith("data: ")) {
+                    const jsonStr = line.slice(6);
+                    if (jsonStr.trim()) {
+                        try {
+                            onEvent(JSON.parse(jsonStr));
+                        } catch (e) {
+                            console.warn("SSE JSON parse error:", jsonStr, e);
+                        }
+                    }
+                }
+            }
+        }
+        // 处理 buffer 中剩余的数据
+        if (buffer.trim() && buffer.startsWith("data: ")) {
+            const jsonStr = buffer.slice(6).trim();
+            if (jsonStr) {
+                try {
+                    onEvent(JSON.parse(jsonStr));
+                } catch (e) {
+                    console.warn("SSE final parse error:", jsonStr, e);
+                }
+            }
+        }
+    } finally {
+        reader.releaseLock();
+    }
 }
 
 function showError(message) {
@@ -492,7 +656,7 @@ document.getElementById("deepen-input").addEventListener("keydown", (e) => {
 });
 
 // ============================================================
-// URL form submit
+// URL form submit (SSE)
 // ============================================================
 document.getElementById("url-form").addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -501,21 +665,26 @@ document.getElementById("url-form").addEventListener("submit", async (e) => {
 
     const btn = document.getElementById("url-submit");
     setLoading(btn, true);
-    showLoading("正在下载音频并转写，这可能需要几分钟...");
+    showLoading("正在准备...");
+    resetProgressUI();
 
     try {
-        const resp = await fetch("/api/transcribe-url", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ url }),
+        let resultData = null;
+        await fetchSSE("/api/transcribe-url", { url }, (event) => {
+            console.log("[SSE] received:", event.stage, event);
+            if (event.stage === "error") {
+                throw new Error(event.error);
+            } else if (event.stage === "complete") {
+                resultData = event.data;
+            } else {
+                updateProgress(event);
+            }
         });
-        const data = await resp.json();
 
-        if (data.success) {
-            showLoading("转写完成，正在生成 AI 总结...");
-            setTimeout(() => showResults(data), 300);
-        } else {
-            showError(data.error || "处理失败");
+        if (resultData && resultData.success) {
+            showResults(resultData);
+        } else if (resultData) {
+            showError(resultData.error || "处理失败");
         }
     } catch (err) {
         showError("请求失败: " + err.message);
@@ -525,7 +694,7 @@ document.getElementById("url-form").addEventListener("submit", async (e) => {
 });
 
 // ============================================================
-// File form submit
+// File form submit (SSE)
 // ============================================================
 document.getElementById("file-form").addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -538,23 +707,28 @@ document.getElementById("file-form").addEventListener("submit", async (e) => {
 
     const btn = document.getElementById("file-submit");
     setLoading(btn, true);
-    showLoading("正在上传并转写，这可能需要几分钟...");
+    showLoading("正在准备...");
+    resetProgressUI();
 
     const formData = new FormData();
     formData.append("file", file);
 
     try {
-        const resp = await fetch("/api/transcribe-file", {
-            method: "POST",
-            body: formData,
+        let resultData = null;
+        await fetchSSE("/api/transcribe-file", formData, (event) => {
+            if (event.stage === "error") {
+                throw new Error(event.error);
+            } else if (event.stage === "complete") {
+                resultData = event.data;
+            } else {
+                updateProgress(event);
+            }
         });
-        const data = await resp.json();
 
-        if (data.success) {
-            showLoading("转写完成，正在生成 AI 总结...");
-            setTimeout(() => showResults(data), 300);
-        } else {
-            showError(data.error || "处理失败");
+        if (resultData && resultData.success) {
+            showResults(resultData);
+        } else if (resultData) {
+            showError(resultData.error || "处理失败");
         }
     } catch (err) {
         showError("请求失败: " + err.message);

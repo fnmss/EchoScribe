@@ -2,16 +2,23 @@
 
 import json
 import os
+import queue
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 
 import requests
-from flask import Flask, jsonify, render_template, request, send_file
+from flask import Flask, Response, jsonify, render_template, request, send_file, stream_with_context
 
 app = Flask(__name__)
+
+
+def sse_event(data):
+    """将 dict 格式化为 SSE data 行。"""
+    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 # 媒体文件目录（用于视频播放）
 MEDIA_DIR = os.path.join(tempfile.gettempdir(), "funasr_media")
@@ -77,7 +84,7 @@ def cleanup_old_media(max_age_hours=1):
         pass
 
 
-def get_model():
+def get_model(status_callback=None):
     """延迟加载 FunASR 模型。"""
     global funasr_model
     if funasr_model is None:
@@ -85,6 +92,8 @@ def get_model():
         from funasr import AutoModel
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
+        if status_callback:
+            status_callback("loading")
         print(f"正在加载 EchoScribe 模型 (设备: {device})...")
         funasr_model = AutoModel(
             model="paraformer-zh",
@@ -93,8 +102,15 @@ def get_model():
             device=device,
             disable_update=True,
         )
+        if status_callback:
+            status_callback("ready")
         print("EchoScribe 模型加载完成。")
     return funasr_model
+
+
+def is_model_loaded():
+    """检查模型是否已加载。"""
+    return funasr_model is not None
 
 
 def check_deps():
@@ -161,11 +177,22 @@ def get_douyin_cookies_opts():
     return None
 
 
-def download_audio(url, output_dir):
+def download_audio(url, output_dir, progress_callback=None):
     """使用 yt-dlp 下载音频和视频，返回 (wav_path, video_path, metadata)。"""
     import yt_dlp
 
     url = normalize_url(url)
+
+    def _dl_hook(d):
+        if progress_callback and d.get("status") == "downloading":
+            pct_str = d.get("_percent_str", "").strip().rstrip("%")
+            try:
+                pct = float(pct_str)
+            except (ValueError, TypeError):
+                pct = None
+            progress_callback({"status": "downloading", "progress": pct})
+        elif progress_callback and d.get("status") == "finished":
+            progress_callback({"status": "finished"})
 
     outtmpl = os.path.join(output_dir, "%(id)s.%(ext)s")
     ydl_opts = {
@@ -175,6 +202,7 @@ def download_audio(url, output_dir):
         "no_warnings": True,
         "noplaylist": True,
         "extract_flat": False,
+        "progress_hooks": [_dl_hook],
         "postprocessors": [
             {
                 "key": "FFmpegExtractAudio",
@@ -513,7 +541,7 @@ def serve_media(filename):
 
 @app.route("/api/transcribe-url", methods=["POST"])
 def api_transcribe_url():
-    """通过 URL 转写音视频。"""
+    """通过 URL 转写音视频（SSE 流式进度）。"""
     data = request.get_json()
     url = data.get("url", "").strip()
 
@@ -521,100 +549,230 @@ def api_transcribe_url():
         return jsonify({"success": False, "error": "请输入 URL"}), 400
 
     tmpdir = tempfile.mkdtemp(prefix="funasr_web_")
-    try:
-        check_deps()
-        wav_path, video_path, metadata = download_audio(url, tmpdir)
+    model_already_loaded = is_model_loaded()
+    total_steps = 4 if model_already_loaded else 5
+    # 步骤映射：model_loading=1, downloading=2, transcribing=3(sum+1), summarizing=4(sum+1)
+    # 如果模型已加载，步骤从 downloading 开始为 1
 
-        media_filename = None
-        if video_path and os.path.exists(video_path):
-            ext = video_path.rsplit(".", 1)[-1].lower()
-            media_filename = f"{uuid.uuid4().hex[:12]}.{ext}"
-            shutil.copy2(video_path, os.path.join(MEDIA_DIR, media_filename))
+    def generate():
+        q = queue.Queue()
+        step_offset = 0 if model_already_loaded else 1
+        print(f"[SSE] generate() started, model_loaded={model_already_loaded}, total={total_steps}")
 
-        transcription = transcribe_audio(wav_path)
+        def _worker():
+            try:
+                check_deps()
 
-        summary = ""
-        try:
-            summary = summarize_with_llm(transcription["full_text"])
-        except Exception as e:
-            summary = f"AI 总结失败: {e}"
+                # Step 1 (可选): 模型加载
+                if not model_already_loaded:
+                    q.put(sse_event({
+                        "stage": "model_loading",
+                        "text": "正在加载 AI 模型（首次需下载，请耐心等待）...",
+                        "step": 1, "total": total_steps,
+                    }))
+                    def _model_status(status):
+                        if status == "ready":
+                            q.put(sse_event({
+                                "stage": "model_loaded",
+                                "text": "AI 模型加载完成",
+                                "step": 1, "total": total_steps,
+                            }))
+                    get_model(status_callback=_model_status)
 
-        return jsonify({
-            "success": True,
-            "metadata": {
-                "title": metadata["title"],
-                "duration": format_duration(metadata["duration"]),
-                "source": url,
-            },
-            "transcription": transcription,
-            "summary": summary,
-            "video_url": f"/api/media/{media_filename}" if media_filename else None,
-        })
+                # Step 2: 下载音频
+                dl_step = 1 + step_offset
+                q.put(sse_event({
+                    "stage": "downloading",
+                    "text": "正在下载音频...",
+                    "step": dl_step, "total": total_steps,
+                }))
+                def _dl_progress(info):
+                    if info.get("status") == "downloading":
+                        q.put(sse_event({
+                            "stage": "downloading",
+                            "text": "正在下载音频...",
+                            "step": dl_step, "total": total_steps,
+                            "progress": info.get("progress"),
+                        }))
+                wav_path, video_path, metadata = download_audio(url, tmpdir, progress_callback=_dl_progress)
 
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-    finally:
+                media_filename = None
+                if video_path and os.path.exists(video_path):
+                    ext = video_path.rsplit(".", 1)[-1].lower()
+                    media_filename = f"{uuid.uuid4().hex[:12]}.{ext}"
+                    shutil.copy2(video_path, os.path.join(MEDIA_DIR, media_filename))
+
+                # Step 3: 转写
+                transcribe_step = 2 + step_offset
+                q.put(sse_event({
+                    "stage": "transcribing",
+                    "text": "正在转写音频...",
+                    "step": transcribe_step, "total": total_steps,
+                }))
+                transcription = transcribe_audio(wav_path)
+
+                # Step 4: AI 总结
+                summarize_step = 3 + step_offset
+                q.put(sse_event({
+                    "stage": "summarizing",
+                    "text": "正在生成 AI 总结...",
+                    "step": summarize_step, "total": total_steps,
+                }))
+                summary = ""
+                try:
+                    summary = summarize_with_llm(transcription["full_text"])
+                except Exception as e:
+                    summary = f"AI 总结失败: {e}"
+
+                q.put(sse_event({
+                    "stage": "complete",
+                    "data": {
+                        "success": True,
+                        "metadata": {
+                            "title": metadata["title"],
+                            "duration": format_duration(metadata["duration"]),
+                            "source": url,
+                        },
+                        "transcription": transcription,
+                        "summary": summary,
+                        "video_url": f"/api/media/{media_filename}" if media_filename else None,
+                    },
+                }))
+
+            except Exception as e:
+                print(f"[SSE] worker error: {e}")
+                q.put(sse_event({"stage": "error", "error": str(e)}))
+            finally:
+                q.put(None)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+        while True:
+            event = q.get()
+            if event is None:
+                print("[SSE] generator done")
+                break
+            # 解析事件类型用于日志
+            try:
+                evt_data = json.loads(event.split("data: ", 1)[1].strip())
+                print(f"[SSE] yielding: stage={evt_data.get('stage')}, step={evt_data.get('step')}")
+            except Exception:
+                print(f"[SSE] yielding event")
+            yield event
+            import sys
+            sys.stdout.flush()
+
         shutil.rmtree(tmpdir, ignore_errors=True)
+
+    return Response(stream_with_context(generate()), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.route("/api/transcribe-file", methods=["POST"])
 def api_transcribe_file():
-    """通过上传文件转写音视频。"""
+    """通过上传文件转写音视频（SSE 流式进度）。"""
     file = request.files.get("file")
 
     if not file or file.filename == "":
         return jsonify({"success": False, "error": "请上传文件"}), 400
 
     tmpdir = tempfile.mkdtemp(prefix="funasr_web_")
-    try:
-        check_deps()
+    ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "wav"
+    upload_path = os.path.join(tmpdir, f"upload.{ext}")
+    file.save(upload_path)
 
-        ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "wav"
-        upload_path = os.path.join(tmpdir, f"upload.{ext}")
-        file.save(upload_path)
+    model_already_loaded = is_model_loaded()
+    total_steps = 3 if model_already_loaded else 4
 
-        wav_path = os.path.join(tmpdir, "audio.wav")
-        convert_to_wav(upload_path, wav_path)
-
-        transcription = transcribe_audio(wav_path)
-
-        summary = ""
+    def generate():
         try:
-            summary = summarize_with_llm(transcription["full_text"])
-        except Exception as e:
-            summary = f"AI 总结失败: {e}"
+            check_deps()
 
-        media_filename = None
-        if ext in BROWSER_VIDEO_FORMATS:
-            media_filename = f"{uuid.uuid4().hex[:12]}.{ext}"
-            shutil.copy2(upload_path, os.path.join(MEDIA_DIR, media_filename))
-        elif ext in ("mkv", "avi", "mov", "flv", "wmv", "ts"):
-            media_filename = f"{uuid.uuid4().hex[:12]}.mp4"
-            media_path = os.path.join(MEDIA_DIR, media_filename)
+            step_offset = 0 if model_already_loaded else 1
+
+            # Step 1 (可选): 模型加载
+            if not model_already_loaded:
+                yield sse_event({
+                    "stage": "model_loading",
+                    "text": "正在加载 AI 模型（首次需下载，请耐心等待）...",
+                    "step": 1, "total": total_steps,
+                })
+                get_model()
+                yield sse_event({
+                    "stage": "model_loaded",
+                    "text": "AI 模型加载完成",
+                    "step": 1, "total": total_steps,
+                })
+
+            # Step 2: 格式转换
+            convert_step = 1 + step_offset
+            yield sse_event({
+                "stage": "converting",
+                "text": "正在转换音频格式...",
+                "step": convert_step, "total": total_steps,
+            })
+            wav_path = os.path.join(tmpdir, "audio.wav")
+            convert_to_wav(upload_path, wav_path)
+
+            # Step 3: 转写
+            transcribe_step = 2 + step_offset
+            yield sse_event({
+                "stage": "transcribing",
+                "text": "正在转写音频...",
+                "step": transcribe_step, "total": total_steps,
+            })
+            transcription = transcribe_audio(wav_path)
+
+            # Step 4: AI 总结
+            summarize_step = 3 + step_offset
+            yield sse_event({
+                "stage": "summarizing",
+                "text": "正在生成 AI 总结...",
+                "step": summarize_step, "total": total_steps,
+            })
+            summary = ""
             try:
-                subprocess.run(
-                    ["ffmpeg", "-y", "-i", upload_path, "-c", "copy", media_path],
-                    check=True, capture_output=True,
-                )
-            except Exception:
-                media_filename = None
+                summary = summarize_with_llm(transcription["full_text"])
+            except Exception as e:
+                summary = f"AI 总结失败: {e}"
 
-        return jsonify({
-            "success": True,
-            "metadata": {
-                "title": file.filename,
-                "duration": "未知",
-                "source": file.filename,
-            },
-            "transcription": transcription,
-            "summary": summary,
-            "video_url": f"/api/media/{media_filename}" if media_filename else None,
-        })
+            media_filename = None
+            if ext in BROWSER_VIDEO_FORMATS:
+                media_filename = f"{uuid.uuid4().hex[:12]}.{ext}"
+                shutil.copy2(upload_path, os.path.join(MEDIA_DIR, media_filename))
+            elif ext in ("mkv", "avi", "mov", "flv", "wmv", "ts"):
+                media_filename = f"{uuid.uuid4().hex[:12]}.mp4"
+                media_path = os.path.join(MEDIA_DIR, media_filename)
+                try:
+                    subprocess.run(
+                        ["ffmpeg", "-y", "-i", upload_path, "-c", "copy", media_path],
+                        check=True, capture_output=True,
+                    )
+                except Exception:
+                    media_filename = None
 
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
+            yield sse_event({
+                "stage": "complete",
+                "data": {
+                    "success": True,
+                    "metadata": {
+                        "title": file.filename,
+                        "duration": "未知",
+                        "source": file.filename,
+                    },
+                    "transcription": transcription,
+                    "summary": summary,
+                    "video_url": f"/api/media/{media_filename}" if media_filename else None,
+                },
+            })
+
+        except Exception as e:
+            yield sse_event({"stage": "error", "error": str(e)})
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    return Response(stream_with_context(generate()), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.route("/api/deepen", methods=["POST"])
