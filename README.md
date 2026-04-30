@@ -30,7 +30,7 @@ git clone https://github.com/fnmss/EchoScribe.git
 cd EchoScribe
 ```
 
-### 2. 创建并激活 Python 虚拟环境
+### 2. 创建并激活 Python 虚拟环境（可选）
 
 **Windows：**
 
@@ -47,6 +47,8 @@ source venv/bin/activate
 ```
 
 激活后终端提示符前会出现 `(venv)` 前缀。
+
+> 不使用虚拟环境也可以，直接在系统 Python 中安装依赖即可。如果使用虚拟环境，后续的 Claude Code CLI 也需要在虚拟环境激活状态下安装，否则会找不到 `claude` 命令。
 
 ### 3. 安装 PyTorch（根据硬件选择）
 
@@ -81,15 +83,8 @@ pip install -r requirements.txt
 - macOS：`brew install ffmpeg`
 - Linux (Debian/Ubuntu)：`sudo apt install ffmpeg`
 
-**Claude Code CLI（可选，AI 摘要功能需要）：**
-
-```bash
-npm install -g @anthropic-ai/claude-code
-```
 
 安装后运行 `claude --version` 确认可用，并按提示完成认证。
-
-> 如果使用 Python 虚拟环境，请在虚拟环境激活状态下安装 Claude CLI，否则可能找不到 `claude` 命令。
 
 ## 使用方法
 
