@@ -2,6 +2,10 @@
 
 基于 [FunASR](https://github.com/modelscope/FunASR) 的音视频转写 Web 应用，支持从 URL 或本地文件导入音视频，自动生成带时间戳的文字转写，并通过 Claude AI 进行智能摘要和问答分析。
 
+![URL 转写界面](docs/picture1.png)
+
+![转写结果与 AI 摘要](docs/picture2.png)
+
 ## 功能特性
 
 - **URL 转写**：粘贴视频/音频链接（支持 B站、YouTube、抖音等），自动下载并转写
