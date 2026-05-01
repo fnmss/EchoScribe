@@ -37,6 +37,10 @@ DEFAULT_CONFIG = {
         "api_key": "",
         "model": "",
     },
+    "download_dir": "downloads",
+    "save_dir": "",
+    "save_video": True,
+    "docs_dir": "docs",
 }
 
 
@@ -179,9 +183,16 @@ def get_douyin_cookies_opts():
 
 def download_audio(url, output_dir, progress_callback=None):
     """使用 yt-dlp 下载音频和视频，返回 (wav_path, video_path, metadata)。"""
-    import yt_dlp
-
     url = normalize_url(url)
+
+    # 抖音链接优先使用 CDP 下载（无需 cookies）
+    if is_douyin_url(url):
+        try:
+            return download_douyin_via_cdp(url, output_dir, progress_callback)
+        except Exception as e:
+            print(f"[CDP] 抖音 CDP 下载失败，回退到 yt-dlp: {e}")
+
+    import yt_dlp
 
     def _dl_hook(d):
         if progress_callback and d.get("status") == "downloading":
@@ -291,6 +302,232 @@ def convert_to_wav(input_path, output_path):
     except subprocess.CalledProcessError as e:
         err = e.stderr.decode(errors="replace") if e.stderr else str(e)
         raise RuntimeError(f"音频转换失败: {err}")
+
+
+# ============================================================
+# Chrome DevTools Protocol 抖音下载器
+# ============================================================
+
+def _find_chrome():
+    """查找 Chrome 可执行文件路径。"""
+    if os.name == "nt":
+        candidates = [
+            os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
+        ]
+        for p in candidates:
+            if os.path.exists(p):
+                return p
+    return shutil.which("google-chrome") or shutil.which("chrome")
+
+
+def download_douyin_via_cdp(url, output_dir, progress_callback=None):
+    """通过 Chrome DevTools Protocol 下载抖音视频，返回 (wav_path, video_path, metadata)。"""
+    import http.client
+    import json as _json
+    import re
+
+    import websocket
+
+    chrome_path = _find_chrome()
+    if not chrome_path:
+        raise RuntimeError("未找到 Chrome 浏览器，无法使用 CDP 下载抖音视频")
+
+    if progress_callback:
+        progress_callback({"status": "downloading", "progress": 0})
+
+    # 启动 Chrome headless
+    profile_dir = os.path.join(output_dir, f".chrome_cdp_{uuid.uuid4().hex[:8]}")
+    # 找一个可用端口
+    import socket as _socket
+    with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as _s:
+        _s.bind(("127.0.0.1", 0))
+        port = _s.getsockname()[1]
+    chrome_args = [
+        chrome_path,
+        f"--remote-debugging-port={port}",
+        f"--user-data-dir={profile_dir}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--headless=new",
+        "--disable-gpu",
+        "--disable-software-rasterizer",
+        "--disable-extensions",
+        "--mute-audio",
+    ]
+    chrome_proc = subprocess.Popen(chrome_args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    try:
+        # 等待调试端口就绪
+        ws_url = None
+        for i in range(30):
+            try:
+                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+                conn.request("GET", "/json")
+                resp = conn.getresponse()
+                pages = _json.loads(resp.read())
+                conn.close()
+                for p in pages:
+                    if p.get("type") == "page":
+                        ws_url = p.get("webSocketDebuggerUrl")
+                        break
+                if ws_url:
+                    break
+            except Exception:
+                pass
+            if progress_callback:
+                progress_callback({"status": "downloading", "progress": min(5 + i, 15)})
+            time.sleep(1)
+
+        if not ws_url:
+            raise RuntimeError("无法连接到 Chrome 调试端口")
+
+        # 连接 WebSocket
+        ws = websocket.create_connection(ws_url, timeout=30, suppress_origin=True)
+        msg_id = [0]
+        video_urls = []
+
+        def cdp_send(method, params=None):
+            msg_id[0] += 1
+            payload = {"id": msg_id[0], "method": method}
+            if params:
+                payload["params"] = params
+            ws.send(_json.dumps(payload))
+            while True:
+                resp = _json.loads(ws.recv())
+                if resp.get("id") == msg_id[0]:
+                    return resp
+                # 处理事件消息，捕获视频 URL
+                if resp.get("method") in ("Network.requestWillBeSent", "Network.responseReceived"):
+                    req_url = ""
+                    params_data = resp.get("params", {})
+                    if "request" in params_data:
+                        req_url = params_data["request"].get("url", "")
+                    elif "response" in params_data:
+                        req_url = params_data["response"].get("url", "")
+                    if req_url and ("douyinvod.com" in req_url or
+                                    (".mp4" in req_url and "uuu_" not in req_url and "/aweme/" not in req_url)):
+                        if req_url not in video_urls:
+                            video_urls.append(req_url)
+
+        # 启用网络监听
+        cdp_send("Network.enable")
+        cdp_send("Page.enable")
+
+        # 导航到抖音链接
+        cdp_send("Page.navigate", {"url": url})
+
+        # 等待页面加载并捕获视频 URL
+        if progress_callback:
+            progress_callback({"status": "downloading", "progress": 20})
+
+        deadline = time.time() + 20  # 最多等 20 秒
+        wait_start = time.time()
+        last_progress = 20
+        while time.time() < deadline and not video_urls:
+            try:
+                ws.settimeout(1)
+                resp = _json.loads(ws.recv())
+                if resp.get("method") in ("Network.requestWillBeSent", "Network.responseReceived"):
+                    req_url = ""
+                    params_data = resp.get("params", {})
+                    if "request" in params_data:
+                        req_url = params_data["request"].get("url", "")
+                    elif "response" in params_data:
+                        req_url = params_data["response"].get("url", "")
+                    if req_url and ("douyinvod.com" in req_url or
+                                    (".mp4" in req_url and "uuu_" not in req_url and "/aweme/" not in req_url)):
+                        if req_url not in video_urls:
+                            video_urls.append(req_url)
+            except websocket.WebSocketTimeoutException:
+                pass
+            except Exception:
+                break
+            # 每秒发送进度，保持 SSE 连接活跃
+            elapsed = time.time() - wait_start
+            pct = min(20 + int(elapsed * 1.5), 45)
+            if progress_callback and pct != last_progress:
+                progress_callback({"status": "downloading", "progress": pct})
+                last_progress = pct
+
+        ws.close()
+
+        if not video_urls:
+            raise RuntimeError("CDP 未能捕获到抖音视频 URL")
+
+        # 选择最佳视频 URL
+        best_url = video_urls[0]
+
+        if progress_callback:
+            progress_callback({"status": "downloading", "progress": 50})
+
+        # 下载视频
+        print(f"[CDP] 下载视频: {best_url[:120]}...")
+        video_data = _fetch_url(best_url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://www.douyin.com/",
+        })
+
+        # 提取 aweme_id 作为文件名
+        aweme_id = re.search(r'aweme_id=(\d+)', url) or re.search(r'/video/(\d+)', url)
+        video_id = aweme_id.group(1) if aweme_id else "douyin_video"
+
+        # 保存视频
+        video_path = os.path.join(output_dir, f"{video_id}.mp4")
+        with open(video_path, "wb") as f:
+            f.write(video_data)
+        print(f"[CDP] 视频已保存: {video_path} ({len(video_data) / 1024 / 1024:.1f} MB)")
+
+        if progress_callback:
+            progress_callback({"status": "downloading", "progress": 80})
+
+        # 提取音频
+        wav_path = os.path.join(output_dir, f"{video_id}.wav")
+        convert_to_wav(video_path, wav_path)
+
+        if progress_callback:
+            progress_callback({"status": "finished"})
+
+        metadata = {
+            "title": f"抖音视频 {video_id}",
+            "duration": 0,
+            "id": video_id,
+            "webpage_url": url,
+        }
+
+        return wav_path, video_path, metadata
+
+    finally:
+        chrome_proc.terminate()
+        try:
+            chrome_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            chrome_proc.kill()
+        # 清理临时 profile
+        try:
+            shutil.rmtree(profile_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+
+def _fetch_url(url, headers=None, max_redirects=5):
+    """下载 URL 内容，支持重定向。"""
+    if max_redirects <= 0:
+        raise RuntimeError("重定向次数过多")
+    import urllib.request
+    req = urllib.request.Request(url)
+    if headers:
+        for k, v in headers.items():
+            req.add_header(k, v)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            # 跟随重定向
+            if resp.status in (301, 302, 303, 307, 308) and "Location" in resp.headers:
+                return _fetch_url(resp.headers["Location"], headers, max_redirects - 1)
+            return resp.read()
+    except Exception as e:
+        raise RuntimeError(f"下载失败: {e}")
 
 
 def format_timestamp(ms):
@@ -548,7 +785,15 @@ def api_transcribe_url():
     if not url:
         return jsonify({"success": False, "error": "请输入 URL"}), 400
 
-    tmpdir = tempfile.mkdtemp(prefix="funasr_web_")
+    # 下载目录：优先使用配置的 download_dir，否则用系统临时目录
+    dl_dir = get_download_dir()
+    if dl_dir:
+        output_dir = dl_dir
+        is_temp_dir = False
+    else:
+        output_dir = tempfile.mkdtemp(prefix="funasr_web_")
+        is_temp_dir = True
+
     model_already_loaded = is_model_loaded()
     total_steps = 4 if model_already_loaded else 5
     # 步骤映射：model_loading=1, downloading=2, transcribing=3(sum+1), summarizing=4(sum+1)
@@ -594,13 +839,23 @@ def api_transcribe_url():
                             "step": dl_step, "total": total_steps,
                             "progress": info.get("progress"),
                         }))
-                wav_path, video_path, metadata = download_audio(url, tmpdir, progress_callback=_dl_progress)
+                wav_path, video_path, metadata = download_audio(url, output_dir, progress_callback=_dl_progress)
+
+                cfg = load_config()
+                save_video = cfg.get("save_video", True)
 
                 media_filename = None
                 if video_path and os.path.exists(video_path):
-                    ext = video_path.rsplit(".", 1)[-1].lower()
-                    media_filename = f"{uuid.uuid4().hex[:12]}.{ext}"
-                    shutil.copy2(video_path, os.path.join(MEDIA_DIR, media_filename))
+                    if save_video:
+                        ext = video_path.rsplit(".", 1)[-1].lower()
+                        media_filename = f"{uuid.uuid4().hex[:12]}.{ext}"
+                        shutil.copy2(video_path, os.path.join(MEDIA_DIR, media_filename))
+                    elif not is_temp_dir:
+                        # 不保存视频时，删除下载目录中的原始视频
+                        try:
+                            os.remove(video_path)
+                        except OSError:
+                            pass
 
                 # Step 3: 转写
                 transcribe_step = 2 + step_offset
@@ -623,6 +878,31 @@ def api_transcribe_url():
                     summary = summarize_with_llm(transcription["full_text"])
                 except Exception as e:
                     summary = f"AI 总结失败: {e}"
+
+                # 如果配置了 save_dir，永久保存音视频
+                save_dir = get_save_dir()
+                if save_dir:
+                    try:
+                        if wav_path and os.path.exists(wav_path):
+                            shutil.copy2(wav_path, os.path.join(save_dir, os.path.basename(wav_path)))
+                        if save_video and video_path and os.path.exists(video_path):
+                            shutil.copy2(video_path, os.path.join(save_dir, os.path.basename(video_path)))
+                    except Exception as e:
+                        print(f"[SSE] 保存到 save_dir 失败: {e}")
+
+                # 自动保存 .md/.txt 到 docs_dir
+                try:
+                    docs_dir = get_docs_dir()
+                    safe_title = (metadata["title"] or "untitled").replace("/", "_").replace("\\", "_")[:50]
+                    if summary:
+                        with open(os.path.join(docs_dir, f"{safe_title}_summary.md"), "w", encoding="utf-8") as f:
+                            f.write(f"# {metadata['title']} - AI 总结\n\n{summary}\n")
+                    full_text = transcription.get("full_text", "")
+                    if full_text:
+                        with open(os.path.join(docs_dir, f"{safe_title}_transcription.txt"), "w", encoding="utf-8") as f:
+                            f.write(full_text)
+                except Exception as e:
+                        print(f"[SSE] 保存到 save_dir 失败: {e}")
 
                 q.put(sse_event({
                     "stage": "complete",
@@ -662,7 +942,8 @@ def api_transcribe_url():
             import sys
             sys.stdout.flush()
 
-        shutil.rmtree(tmpdir, ignore_errors=True)
+        if is_temp_dir:
+            shutil.rmtree(output_dir, ignore_errors=True)
 
     return Response(stream_with_context(generate()), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -751,6 +1032,20 @@ def api_transcribe_file():
                 except Exception:
                     media_filename = None
 
+            # 自动保存 .md/.txt 到 docs_dir
+            try:
+                docs_dir = get_docs_dir()
+                safe_title = (file.filename or "untitled").rsplit(".", 1)[0].replace("/", "_").replace("\\", "_")[:50]
+                if summary:
+                    with open(os.path.join(docs_dir, f"{safe_title}_summary.md"), "w", encoding="utf-8") as f:
+                        f.write(f"# {file.filename} - AI 总结\n\n{summary}\n")
+                full_text = transcription.get("full_text", "")
+                if full_text:
+                    with open(os.path.join(docs_dir, f"{safe_title}_transcription.txt"), "w", encoding="utf-8") as f:
+                        f.write(full_text)
+            except Exception as e:
+                print(f"[SSE] 保存到 docs_dir 失败: {e}")
+
             yield sse_event({
                 "stage": "complete",
                 "data": {
@@ -834,8 +1129,80 @@ def api_save_config():
         if api_data.get("api_key"):
             cfg["custom_api"]["api_key"] = api_data["api_key"]
 
+    if "download_dir" in data:
+        cfg["download_dir"] = data["download_dir"]
+    if "save_dir" in data:
+        cfg["save_dir"] = data["save_dir"]
+    if "save_video" in data:
+        cfg["save_video"] = bool(data["save_video"])
+    if "docs_dir" in data:
+        cfg["docs_dir"] = data["docs_dir"]
+
     save_config(cfg)
     return jsonify({"success": True})
+
+
+def get_download_dir():
+    """获取下载目录绝对路径，不存在则创建。"""
+    cfg = load_config()
+    dl_dir = cfg.get("download_dir", "").strip()
+    if not dl_dir:
+        return None
+    # 相对路径基于项目目录
+    if not os.path.isabs(dl_dir):
+        dl_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), dl_dir)
+    os.makedirs(dl_dir, exist_ok=True)
+    return dl_dir
+
+
+def get_save_dir():
+    """获取永久保存目录绝对路径，不存在则创建。"""
+    cfg = load_config()
+    save_dir = cfg.get("save_dir", "").strip()
+    if not save_dir:
+        return None
+    if not os.path.isabs(save_dir):
+        save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), save_dir)
+    os.makedirs(save_dir, exist_ok=True)
+    return save_dir
+
+
+def get_docs_dir():
+    """获取文档保存目录（docs_dir），相对于 save_dir 或项目目录。"""
+    cfg = load_config()
+    docs_dir = cfg.get("docs_dir", "docs").strip() or "docs"
+    if os.path.isabs(docs_dir):
+        os.makedirs(docs_dir, exist_ok=True)
+        return docs_dir
+    # 优先放在 save_dir 下，否则项目目录下
+    base = get_save_dir() or os.path.dirname(os.path.abspath(__file__))
+    full = os.path.join(base, docs_dir)
+    os.makedirs(full, exist_ok=True)
+    return full
+
+
+@app.route("/api/save-file", methods=["POST"])
+def api_save_file():
+    """保存导出文件到 docs_dir。"""
+    data = request.get_json()
+    if not data:
+        return jsonify({"success": False, "error": "无效数据"}), 400
+
+    docs_dir = get_docs_dir()
+    if not docs_dir:
+        return jsonify({"success": False, "error": "未配置文档目录"}), 400
+
+    filename = data.get("filename", "").strip()
+    content = data.get("content", "")
+    if not filename:
+        return jsonify({"success": False, "error": "文件名为空"}), 400
+
+    # 安全检查：防止路径穿越
+    filename = os.path.basename(filename)
+    filepath = os.path.join(docs_dir, filename)
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(content)
+    return jsonify({"success": True, "path": filepath})
 
 
 if __name__ == "__main__":
