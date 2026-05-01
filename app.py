@@ -310,6 +310,66 @@ def convert_to_wav(input_path, output_path):
         raise RuntimeError(f"音频转换失败: {err}")
 
 
+CHUNK_DURATION_SEC = 30 * 60  # 30 分钟
+
+
+def probe_duration(path):
+    """用 ffprobe 获取音频时长（秒）。"""
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        path,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        return None
+    try:
+        return float(result.stdout.strip())
+    except ValueError:
+        return None
+
+
+def parse_timestamp(ts):
+    """将 HH:MM:SS 解析为毫秒。"""
+    parts = ts.split(":")
+    if len(parts) == 3:
+        h, m, s = int(parts[0]), int(parts[1]), int(parts[2])
+    elif len(parts) == 2:
+        h = 0
+        m, s = int(parts[0]), int(parts[1])
+    else:
+        return 0
+    return (h * 3600 + m * 60 + s) * 1000
+
+
+def split_audio(audio_path, chunk_sec=CHUNK_DURATION_SEC):
+    """将长音频按 chunk_sec 秒切分，返回 [(chunk_path, offset_sec), ...]。"""
+    duration = probe_duration(audio_path)
+    if duration is None or duration <= chunk_sec:
+        return [(audio_path, 0)]
+
+    tmp_dir = tempfile.mkdtemp(prefix="funasr_chunk_")
+    chunks = []
+    idx = 0
+    offset = 0.0
+    while offset < duration:
+        chunk_path = os.path.join(tmp_dir, f"chunk_{idx:03d}.wav")
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", audio_path,
+            "-ss", str(offset),
+            "-t", str(chunk_sec),
+            "-ar", "16000", "-ac", "1", "-sample_fmt", "s16",
+            chunk_path,
+        ]
+        subprocess.run(cmd, check=True, capture_output=True)
+        chunks.append((chunk_path, offset))
+        offset += chunk_sec
+        idx += 1
+    return chunks
+
+
 # ============================================================
 # Chrome DevTools Protocol 抖音下载器
 # ============================================================
@@ -598,18 +658,16 @@ def group_sentences_by_interval(sentences, interval_ms=120000):
     return groups
 
 
-def transcribe_audio(audio_path):
-    """转写音频，返回结构化结果。"""
+def _transcribe_chunk(audio_path):
+    """转写单个音频片段，返回 sentences 和 full_text_parts。"""
     model = get_model()
     results = model.generate(
         input=audio_path,
         batch_size_s=300,
         sentence_timestamp=True,
     )
-
     sentences = []
     full_text_parts = []
-
     for result in results:
         sentence_info = result.get("sentence_info", [])
         if sentence_info:
@@ -619,26 +677,60 @@ def transcribe_audio(audio_path):
                 end = sent.get("end", 0)
                 sentences.append({
                     "text": text,
-                    "start": format_timestamp(start),
-                    "end": format_timestamp(end),
-                    "_start_ms": start,
+                    "start": start,
+                    "end": end,
                 })
                 full_text_parts.append(text)
         else:
             text = result.get("text", "")
             if text:
-                sentences.append({"text": text, "start": "", "end": "", "_start_ms": 0})
+                sentences.append({"text": text, "start": 0, "end": 0})
                 full_text_parts.append(text)
+    return sentences, full_text_parts
 
-    grouped = group_sentences_by_interval(sentences)
 
-    for s in sentences:
+def transcribe_audio(audio_path):
+    """转写音频，自动切分长音频，返回结构化结果。"""
+    chunks = split_audio(audio_path)
+    all_sentences = []
+    all_full_text = []
+
+    for chunk_path, offset_sec in chunks:
+        sentences, text_parts = _transcribe_chunk(chunk_path)
+        offset_ms = int(offset_sec * 1000)
+        for s in sentences:
+            s["start"] += offset_ms
+            s["end"] += offset_ms
+            s["_start_ms"] = s["start"]
+            s["start"] = format_timestamp(s["start"])
+            s["end"] = format_timestamp(s["end"])
+        all_sentences.extend(sentences)
+        all_full_text.extend(text_parts)
+
+        # 清理临时分段文件
+        if chunk_path != audio_path and os.path.exists(chunk_path):
+            try:
+                os.remove(chunk_path)
+            except OSError:
+                pass
+
+    # 清理临时分段目录
+    if len(chunks) > 1:
+        chunk_dir = os.path.dirname(chunks[0][0])
+        try:
+            os.rmdir(chunk_dir)
+        except OSError:
+            pass
+
+    grouped = group_sentences_by_interval(all_sentences)
+
+    for s in all_sentences:
         s.pop("_start_ms", None)
 
     return {
-        "sentences": sentences,
+        "sentences": all_sentences,
         "grouped": grouped,
-        "full_text": "".join(full_text_parts),
+        "full_text": "".join(all_full_text),
     }
 
 

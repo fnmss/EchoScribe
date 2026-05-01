@@ -6,6 +6,7 @@
 
 ![转写结果与 AI 摘要](docs/picture2.png)
 
+![手机飞书转写界面](docs/picture3.jpg)
 ## 功能特性
 
 - **URL 转写**：粘贴视频/音频链接（支持 B站、YouTube、抖音等），自动下载并转写
@@ -14,6 +15,7 @@
 - **深度问答**：针对转写内容进行 AI 问答
 - **视频播放**：在线播放源视频，点击时间戳跳转到对应位置
 - **CLI 工具**：独立命令行脚本 `transcribe_url.py`，支持批量转写
+- **飞书机器人**：在飞书中发送链接，自动转写并回传结果
 
 ## 环境要求
 
@@ -125,11 +127,66 @@ python transcribe_url.py "URL" --cookies chrome
 python transcribe_url.py -h
 ```
 
+### 飞书机器人
+
+#### 1. 创建飞书应用
+
+1. 访问 [飞书开放平台](https://open.feishu.cn/app)，登录后点击「创建自建应用」
+2. 填写应用名称（如"EchoScribe"），创建完成
+3. 在「凭证与基础信息」页面获取 **App ID** 和 **App Secret**
+4. 左侧菜单「添加应用能力」→ 添加「机器人」
+5. 左侧菜单「事件与回调」→「事件配置」→ 连接方式选「使用长连接接收事件」→ 添加事件 `im.message.receive_v1`
+6. 左侧菜单「版本管理与发布」→ 创建版本 → 提交发布
+
+#### 2. 配置
+
+首次运行 `python feishu_bot.py` 时会自动引导配置：
+
+```bash
+python feishu_bot.py
+```
+
+```
+=== 飞书机器人配置 ===
+请在 https://open.feishu.cn/app 创建应用并获取凭证
+App ID: cli_xxxx
+App Secret: xxxx
+
+=== 大模型 API 配置 ===
+支持任何 OpenAI 兼容 API（DeepSeek、通义千问、OpenAI 等）
+API Base URL: https://api.deepseek.com
+API Key: sk-xxxx
+Model 名称: deepseek-chat
+```
+
+配置会自动保存到 `~/.funasr_config.json`，后续运行无需重复配置。
+
+#### 3. 使用
+
+```bash
+python feishu_bot.py
+```
+
+启动后终端会显示二维码，用飞书扫码添加机器人到会话，然后发送视频/音频链接即可。
+
+**支持的链接格式：**
+- B站：`https://www.bilibili.com/video/BVxxxxxxx`
+- 抖音：`https://www.douyin.com/video/xxxxxxx`
+- YouTube：`https://www.youtube.com/watch?v=xxxxxxx`
+- 其他 yt-dlp 支持的平台
+
+**工作流程：**
+1. 用户在飞书发送包含链接的消息
+2. 机器人回复"收到链接，正在处理..."
+3. 自动下载音频 → 转写文字 → AI 生成摘要
+4. 回传 Markdown 格式的摘要文档和转写原文
+
 ## 项目结构
 
 ```
 .
 ├── app.py              # Flask Web 应用主程序
+├── feishu_bot.py       # 飞书机器人
 ├── transcribe_url.py   # 命令行转写工具
 ├── requirements.txt    # Python 依赖
 ├── static/
@@ -152,6 +209,18 @@ A: 请确认 ffmpeg 已正确安装并在系统 PATH 中。终端运行 `ffmpeg 
 **Q: 如何使用 GPU 加速？**
 
 A: 安装 CUDA 版 PyTorch 后，启动 Web 应用时会自动检测并使用 GPU。CLI 工具可通过 `--device cuda` 参数指定。
+
+**Q: 飞书机器人连接失败？**
+
+A: 请检查：
+1. App ID 和 App Secret 是否正确
+2. 飞书应用是否已发布
+3. 事件订阅是否选择了「长连接」模式
+4. 是否已添加 `im.message.receive_v1` 事件
+
+**Q: 飞书机器人如何修改大模型配置？**
+
+A: 编辑 `~/.funasr_config.json` 文件，修改 `llm_backend` 和 `custom_api` 字段，或删除文件后重新运行 `python feishu_bot.py` 重新配置。
 
 ## 许可证
 
