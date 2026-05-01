@@ -41,6 +41,10 @@ DEFAULT_CONFIG = {
     "save_dir": "",
     "save_video": True,
     "docs_dir": "docs",
+    "feishu": {
+        "app_id": "",
+        "app_secret": "",
+    },
 }
 
 
@@ -60,7 +64,9 @@ def load_config():
             return cfg
         except Exception:
             pass
-    return DEFAULT_CONFIG.copy()
+    cfg = DEFAULT_CONFIG.copy()
+    save_config(cfg)
+    return cfg
 
 
 def save_config(cfg):
@@ -309,17 +315,19 @@ def convert_to_wav(input_path, output_path):
 # ============================================================
 
 def _find_chrome():
-    """查找 Chrome 可执行文件路径。"""
+    """查找 Chrome/Edge 可执行文件路径（CDP 兼容）。"""
     if os.name == "nt":
         candidates = [
             os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
             os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
             os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),
+            os.path.expandvars(r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"),
         ]
         for p in candidates:
             if os.path.exists(p):
                 return p
-    return shutil.which("google-chrome") or shutil.which("chrome")
+    return shutil.which("google-chrome") or shutil.which("chrome") or shutil.which("microsoft-edge")
 
 
 def download_douyin_via_cdp(url, output_dir, progress_callback=None):
