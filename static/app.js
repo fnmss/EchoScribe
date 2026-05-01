@@ -801,6 +801,12 @@ async function loadLLMConfig() {
         } else {
             hint.textContent = "";
         }
+
+        // 存储设置
+        document.getElementById("download-dir").value = cfg.download_dir || "";
+        document.getElementById("save-dir").value = cfg.save_dir || "";
+        document.getElementById("save-video").checked = cfg.save_video !== false;
+        document.getElementById("docs-dir").value = cfg.docs_dir || "";
     } catch (e) {
         console.warn("Load config failed:", e);
     }
@@ -818,6 +824,10 @@ document.getElementById("save-llm-config").addEventListener("click", async () =>
             base_url: document.getElementById("api-base-url").value.trim(),
             model: document.getElementById("api-model").value.trim(),
         },
+        download_dir: document.getElementById("download-dir").value.trim(),
+        save_dir: document.getElementById("save-dir").value.trim(),
+        save_video: document.getElementById("save-video").checked,
+        docs_dir: document.getElementById("docs-dir").value.trim(),
     };
     // Only send api_key if user typed a new one
     if (apiKey) {
@@ -867,6 +877,27 @@ function downloadFile(content, filename, mimeType) {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+
+    // 如果配置了 save_dir，同时保存到服务器
+    saveToServer(content, filename);
+}
+
+async function saveToServer(content, filename) {
+    try {
+        const resp = await fetch("/api/config");
+        const data = await resp.json();
+        if (!data.success) return;
+        const cfg = data.config;
+        // 只有配置了 save_dir 时才同步保存到服务器 docs 目录
+        if (!cfg.save_dir) return;
+        await fetch("/api/save-file", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ filename, content }),
+        });
+    } catch (e) {
+        // 静默失败，不影响用户体验
+    }
 }
 
 function exportSummary() {

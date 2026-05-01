@@ -25,3 +25,9 @@ build/
 
 funasr_web_*/
 funasr_transcribe_*/
+
+docs/
+./md
+./txt
+
+downloads/

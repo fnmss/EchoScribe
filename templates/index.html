@@ -250,6 +250,38 @@
                     </div>
                 </div>
 
+                <!-- 存储设置 -->
+                <div class="setting-section">
+                    <div class="setting-section-title">存储设置</div>
+                    <div class="setting-group">
+                        <label class="setting-label">下载位置</label>
+                        <input type="text" id="download-dir" class="setting-input" placeholder="留空使用系统临时目录">
+                        <div class="setting-hint">视频下载目录，相对于项目目录或绝对路径（默认 downloads）</div>
+                    </div>
+                    <div class="setting-group">
+                        <div class="setting-toggle-row">
+                            <div>
+                                <label class="setting-label" style="margin-bottom:0">保存视频文件</label>
+                                <div class="setting-toggle-label">关闭后仅保留音频，不保存 mp4</div>
+                            </div>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="save-video" checked>
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="setting-group">
+                        <label class="setting-label">保存位置</label>
+                        <input type="text" id="save-dir" class="setting-input" placeholder="留空则不永久保存">
+                        <div class="setting-hint">音视频文件的永久保存位置</div>
+                    </div>
+                    <div class="setting-group">
+                        <label class="setting-label">文档目录</label>
+                        <input type="text" id="docs-dir" class="setting-input" placeholder="docs">
+                        <div class="setting-hint">md/txt 文件保存目录，相对于保存位置或项目目录</div>
+                    </div>
+                </div>
+
                 <!-- 大模型配置 -->
                 <div class="setting-section">
                     <div class="setting-section-title">大模型配置</div>
