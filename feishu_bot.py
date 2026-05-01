@@ -144,8 +144,11 @@ def reply_file(client, message_id, file_key):
 # ── 管线执行 ──────────────────────────────────────────────
 
 
-def run_pipeline(client, message_id, url, config):
-    """在子线程中执行完整管线：下载 → 转写 → 总结 → 回传。"""
+def run_pipeline(client, message_id, url, config, need_text=True, need_summary=True):
+    """在子线程中执行管线：下载 → 转写 → 总结 → 回传。
+    need_text: 是否发送转写原文
+    need_summary: 是否发送 AI 总结
+    """
     check_deps()
     download_dir = get_download_dir()
     if not download_dir:
@@ -175,23 +178,31 @@ def run_pipeline(client, message_id, url, config):
         with open(txt_path, "w", encoding="utf-8") as f:
             f.write(full_text)
 
-        # Step 3: 总结
-        print("[管线] 开始 AI 总结...")
-        summary = summarize_with_llm(full_text)
-        print("[管线] 总结完成")
+        # Step 3: 总结（按需执行）
+        summary = None
+        md_path = None
+        if need_summary:
+            print("[管线] 开始 AI 总结...")
+            summary = summarize_with_llm(full_text)
+            print("[管线] 总结完成")
 
-        # 保存总结文件
-        md_path = os.path.join(docs_dir, f"{safe_title}_summary.md")
-        with open(md_path, "w", encoding="utf-8") as f:
-            f.write(summary)
+            # 保存总结文件
+            md_path = os.path.join(docs_dir, f"{safe_title}_summary.md")
+            with open(md_path, "w", encoding="utf-8") as f:
+                f.write(summary)
 
         # Step 4: 回传结果
-        reply_post(client, message_id, f"📄 {title}", summary)
+        if need_summary and summary:
+            reply_post(client, message_id, f"📄 {title}", summary)
+            if md_path:
+                file_key = upload_file(client, md_path)
+                if file_key:
+                    reply_file(client, message_id, file_key)
 
-        # 上传总结文件
-        file_key = upload_file(client, md_path)
-        if file_key:
-            reply_file(client, message_id, file_key)
+        if need_text:
+            file_key = upload_file(client, txt_path)
+            if file_key:
+                reply_file(client, message_id, file_key)
 
         print(f"[管线] 全部完成: {title}")
 
@@ -202,6 +213,21 @@ def run_pipeline(client, message_id, url, config):
 
 
 # ── 事件处理 ──────────────────────────────────────────────
+
+
+def parse_command(text):
+    """解析消息中的指令关键词。
+    返回 (need_text, need_summary):
+    - 包含"文本"：发送转写原文
+    - 包含"总结"：发送 AI 总结
+    - 都不包含：默认都发
+    - 都包含：都发
+    """
+    has_text = "文本" in text
+    has_summary = "总结" in text
+    if has_text or has_summary:
+        return has_text, has_summary
+    return True, True
 
 
 def make_event_handler(client, config):
@@ -228,13 +254,23 @@ def make_event_handler(client, config):
                 reply_text(client, message_id, "未检测到链接，请发送包含视频/音频 URL 的消息")
                 return
 
+            # 解析指令
+            need_text, need_summary = parse_command(text)
             url = urls[0]
-            reply_text(client, message_id, f"收到链接，正在处理...\n{url}")
+
+            # 构建提示信息
+            parts = []
+            if need_text:
+                parts.append("转写原文")
+            if need_summary:
+                parts.append("AI 总结")
+            mode = " + ".join(parts) if parts else "全部"
+            reply_text(client, message_id, f"收到链接，正在处理（{mode}）...\n{url}")
 
             # 子线程执行管线
             thread = threading.Thread(
                 target=run_pipeline,
-                args=(client, message_id, url, config),
+                args=(client, message_id, url, config, need_text, need_summary),
                 daemon=True,
             )
             thread.start()
