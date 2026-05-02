@@ -3,6 +3,7 @@
 
 import json
 import os
+import queue
 import re
 import threading
 import time
@@ -31,6 +32,21 @@ URL_PATTERN = re.compile(
     r"https?://[^\s<>\"']+",
     re.IGNORECASE,
 )
+
+# ── 任务队列 ──────────────────────────────────────────────
+_task_queue = queue.Queue()
+
+
+def _worker():
+    """常驻 worker 线程，串行处理队列中的任务。"""
+    while True:
+        task = _task_queue.get()
+        try:
+            run_pipeline(*task)
+        except Exception as e:
+            print(f"[Worker] 任务执行异常: {e}")
+        finally:
+            _task_queue.task_done()
 
 
 def extract_urls(text):
@@ -195,7 +211,8 @@ def run_pipeline(client, message_id, url, config, need_text=True, need_summary=T
 
         # Step 4: 回传结果
         if need_summary and summary:
-            reply_post(client, message_id, f"📄 {title}", summary)
+            mode_label = "长视频总结" if is_long else "总结"
+            reply_post(client, message_id, f"📄 {title}（{mode_label}）", summary)
             if md_path:
                 file_key = upload_file(client, md_path)
                 if file_key:
@@ -271,15 +288,14 @@ def make_event_handler(client, config):
             if need_summary:
                 parts.append("AI 总结")
             mode = " + ".join(parts) if parts else "全部"
-            reply_text(client, message_id, f"收到链接，正在处理（{mode}）...\n{url}")
+            qsize = _task_queue.qsize()
+            if qsize > 0:
+                reply_text(client, message_id, f"收到链接，排队中（前面 {qsize} 个），正在处理（{mode}）...\n{url}")
+            else:
+                reply_text(client, message_id, f"收到链接，正在处理（{mode}）...\n{url}")
 
-            # 子线程执行管线
-            thread = threading.Thread(
-                target=run_pipeline,
-                args=(client, message_id, url, config, need_text, need_summary, is_long),
-                daemon=True,
-            )
-            thread.start()
+            # 放入队列，由 worker 线程串行处理
+            _task_queue.put((client, message_id, url, config, need_text, need_summary, is_long))
 
         except Exception as e:
             print(f"[事件] 处理消息异常: {e}")
@@ -384,6 +400,11 @@ def main():
         event_handler=event_handler,
         log_level=lark.LogLevel.INFO,
     )
+
+    # 启动 worker 线程，串行处理任务队列
+    worker_thread = threading.Thread(target=_worker, daemon=True)
+    worker_thread.start()
+    print("任务队列 worker 已启动")
 
     print("飞书机器人已启动，等待消息...")
     ws_client.start()
