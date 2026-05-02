@@ -220,14 +220,14 @@ def parse_command(text):
     返回 (need_text, need_summary):
     - 包含"文本"：发送转写原文
     - 包含"总结"：发送 AI 总结
-    - 都不包含：默认都发
+    - 都不包含：默认只发总结
     - 都包含：都发
     """
     has_text = "文本" in text
     has_summary = "总结" in text
     if has_text or has_summary:
         return has_text, has_summary
-    return True, True
+    return False, True
 
 
 def make_event_handler(client, config):
