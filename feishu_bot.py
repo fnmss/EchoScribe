@@ -144,10 +144,11 @@ def reply_file(client, message_id, file_key):
 # ── 管线执行 ──────────────────────────────────────────────
 
 
-def run_pipeline(client, message_id, url, config, need_text=True, need_summary=True):
+def run_pipeline(client, message_id, url, config, need_text=True, need_summary=True, is_long=False):
     """在子线程中执行管线：下载 → 转写 → 总结 → 回传。
     need_text: 是否发送转写原文
     need_summary: 是否发送 AI 总结
+    is_long: 是否使用长视频访谈 prompt
     """
     check_deps()
     download_dir = get_download_dir()
@@ -182,8 +183,9 @@ def run_pipeline(client, message_id, url, config, need_text=True, need_summary=T
         summary = None
         md_path = None
         if need_summary:
-            print("[管线] 开始 AI 总结...")
-            summary = summarize_with_llm(full_text)
+            prompt_type = "long" if is_long else "default"
+            print(f"[管线] 开始 AI 总结（{'长视频' if is_long else '默认'}模式）...")
+            summary = summarize_with_llm(full_text, prompt_type)
             print("[管线] 总结完成")
 
             # 保存总结文件
@@ -217,17 +219,19 @@ def run_pipeline(client, message_id, url, config, need_text=True, need_summary=T
 
 def parse_command(text):
     """解析消息中的指令关键词。
-    返回 (need_text, need_summary):
+    返回 (need_text, need_summary, is_long):
     - 包含"文本"：发送转写原文
     - 包含"总结"：发送 AI 总结
+    - 包含"长"：使用长视频访谈 prompt
     - 都不包含：默认只发总结
     - 都包含：都发
     """
     has_text = "文本" in text
     has_summary = "总结" in text
+    is_long = "长" in text
     if has_text or has_summary:
-        return has_text, has_summary
-    return False, True
+        return has_text, has_summary, is_long
+    return False, True, is_long
 
 
 def make_event_handler(client, config):
@@ -255,11 +259,13 @@ def make_event_handler(client, config):
                 return
 
             # 解析指令
-            need_text, need_summary = parse_command(text)
+            need_text, need_summary, is_long = parse_command(text)
             url = urls[0]
 
             # 构建提示信息
             parts = []
+            if is_long:
+                parts.append("长视频模式")
             if need_text:
                 parts.append("转写原文")
             if need_summary:
@@ -270,7 +276,7 @@ def make_event_handler(client, config):
             # 子线程执行管线
             thread = threading.Thread(
                 target=run_pipeline,
-                args=(client, message_id, url, config, need_text, need_summary),
+                args=(client, message_id, url, config, need_text, need_summary, is_long),
                 daemon=True,
             )
             thread.start()

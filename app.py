@@ -917,25 +917,25 @@ def _call_custom_api(prompt, api_cfg):
         raise RuntimeError(f"自定义 API 响应格式异常: {e}")
 
 
-def load_prompt_template():
-    """从 skills/summarize_prompt.md 加载 prompt 模板。"""
-    prompt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skills", "summarize_prompt.md")
+def load_prompt_template(prompt_type="default"):
+    """从 skills/ 目录加载 prompt 模板。
+    prompt_type: "default" 或 "long"
+    """
+    if prompt_type == "long":
+        filename = "summarize_long_prompt.md"
+    else:
+        filename = "summarize_prompt.md"
+
+    prompt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skills", filename)
     if not os.path.exists(prompt_path):
-        return (
-            "请对以下音视频转写内容进行总结。要求：\n"
-            "1. 提炼核心主题和关键信息\n"
-            "2. 按时间线或逻辑结构分段总结\n"
-            "3. 保留重要的数据、人名、专有名词\n"
-            "4. 使用中文回答\n"
-            "5. 使用多级标题（# ## ### ####）组织内容，便于生成思维导图\n\n"
-            "转写内容：\n{text}"
-        )
+        raise RuntimeError(f"未找到 prompt 模板文件: {prompt_path}")
+
     with open(prompt_path, "r", encoding="utf-8") as f:
         content = f.read()
-    # 提取 Prompt 内容部分（在 ``` 代码块之后的内容）
+
+    # 提取 Prompt 内容部分（在 "## Prompt 内容" 之后的内容）
     if "## Prompt 内容" in content:
         start = content.index("## Prompt 内容") + len("## Prompt 内容")
-        # 找到下一个 ## 标题或文件结尾
         end = len(content)
         next_section = content.find("\n## ", start)
         if next_section != -1:
@@ -946,10 +946,12 @@ def load_prompt_template():
     return prompt
 
 
-def summarize_with_llm(text):
-    """使用配置的 LLM 后端总结转写文本。"""
+def summarize_with_llm(text, prompt_type="default"):
+    """使用配置的 LLM 后端总结转写文本。
+    prompt_type: "default" 或 "long"
+    """
     text = truncate_text(text)
-    prompt_template = load_prompt_template()
+    prompt_template = load_prompt_template(prompt_type)
     prompt = prompt_template.replace("{text}", text)
     return call_llm(prompt)
 
