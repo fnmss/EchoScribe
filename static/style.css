@@ -1160,3 +1160,12 @@ body {
     .tab { padding: 0.5rem 0.6rem; font-size: 0.82rem; }
     .tab svg { display: none; }
 }
+
+.retry-summary-wrap {
+    margin-top: 1rem;
+    text-align: center;
+}
+.retry-summary-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}

@@ -353,6 +353,17 @@ function showResults(data) {
     const summaryEl = document.getElementById("summary-result");
     summaryEl.innerHTML = renderMarkdown(data.summary || "未生成总结");
 
+    // 总结失败时显示重试按钮
+    const existingRetry = summaryEl.querySelector(".retry-summary-wrap");
+    if (existingRetry) existingRetry.remove();
+    if (data.summary && data.summary.startsWith("AI 总结失败")) {
+        const retryWrap = document.createElement("div");
+        retryWrap.className = "retry-summary-wrap";
+        retryWrap.innerHTML = '<button class="btn-primary btn-sm retry-summary-btn">重新总结</button>';
+        retryWrap.querySelector(".retry-summary-btn").addEventListener("click", () => retrySummary());
+        summaryEl.appendChild(retryWrap);
+    }
+
     // Video player
     setupVideoPlayer(data.video_url);
 
@@ -371,6 +382,43 @@ function showResults(data) {
     setTimeout(() => {
         document.getElementById("results").scrollIntoView({ behavior: "smooth", block: "start" });
     }, 100);
+}
+
+async function retrySummary() {
+    if (!lastResultData || !lastResultData.metadata || !lastResultData.metadata.source) {
+        alert("无法重试：缺少原始 URL");
+        return;
+    }
+    const url = lastResultData.metadata.source;
+    const summaryEl = document.getElementById("summary-result");
+    const retryBtn = summaryEl.querySelector(".retry-summary-btn");
+    if (retryBtn) {
+        retryBtn.disabled = true;
+        retryBtn.textContent = "正在重新总结...";
+    }
+
+    try {
+        let newSummary = null;
+        await fetchSSE("/api/retry-summary", { url }, (event) => {
+            if (event.stage === "error") {
+                throw new Error(event.error);
+            } else if (event.stage === "complete") {
+                newSummary = event.data.summary;
+            }
+        });
+
+        if (newSummary) {
+            lastResultData.summary = newSummary;
+            summaryEl.innerHTML = renderMarkdown(newSummary);
+            renderMindMap();
+        }
+    } catch (err) {
+        alert("重新总结失败: " + err.message);
+        if (retryBtn) {
+            retryBtn.disabled = false;
+            retryBtn.textContent = "重新总结";
+        }
+    }
 }
 
 // ============================================================

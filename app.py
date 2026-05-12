@@ -1,5 +1,6 @@
 """音视频转写 + AI 总结 Web 应用。"""
 
+import hashlib
 import json
 import os
 import queue
@@ -20,9 +21,36 @@ def sse_event(data):
     """将 dict 格式化为 SSE data 行。"""
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
+
+def _url_hash(url):
+    """生成 URL 的短 hash 作为缓存文件名。"""
+    return hashlib.md5(url.encode()).hexdigest()[:12]
+
+
+def save_transcription_cache(url, transcription, metadata):
+    """将转写结果保存到缓存目录，供重试总结使用。"""
+    cache_file = os.path.join(CACHE_DIR, f"{_url_hash(url)}.json")
+    data = {"url": url, "transcription": transcription, "metadata": metadata}
+    with open(cache_file, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+
+
+def load_transcription_cache(url):
+    """从缓存加载转写结果，返回 (transcription, metadata) 或 None。"""
+    cache_file = os.path.join(CACHE_DIR, f"{_url_hash(url)}.json")
+    if not os.path.exists(cache_file):
+        return None
+    with open(cache_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return data.get("transcription"), data.get("metadata")
+
 # 媒体文件目录（用于视频播放）
 MEDIA_DIR = os.path.join(tempfile.gettempdir(), "funasr_media")
 os.makedirs(MEDIA_DIR, exist_ok=True)
+
+# 转写结果缓存目录（用于重试 AI 总结）
+CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache")
+os.makedirs(CACHE_DIR, exist_ok=True)
 
 # ============================================================
 # LLM 配置系统
@@ -1077,6 +1105,9 @@ def api_transcribe_url():
                 }))
                 transcription = transcribe_audio(wav_path)
 
+                # 缓存转写结果，供重试总结使用
+                save_transcription_cache(url, transcription, metadata)
+
                 # Step 4: AI 总结
                 summarize_step = 3 + step_offset
                 q.put(sse_event({
@@ -1215,6 +1246,10 @@ def api_transcribe_file():
             })
             transcription = transcribe_audio(wav_path)
 
+            # 缓存转写结果，供重试总结使用
+            file_cache_key = f"file:{file.filename}"
+            save_transcription_cache(file_cache_key, transcription, {"title": file.filename, "duration": 0})
+
             # Step 4: AI 总结
             summarize_step = 3 + step_offset
             yield sse_event({
@@ -1298,6 +1333,60 @@ def api_deepen():
         return jsonify({"success": True, "answer": answer})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/retry-summary", methods=["POST"])
+def api_retry_summary():
+    """重试 AI 总结，使用缓存的转写结果。"""
+    data = request.get_json()
+    url = data.get("url", "").strip()
+    if not url:
+        return jsonify({"success": False, "error": "缺少 URL"}), 400
+
+    cached = load_transcription_cache(url)
+    if not cached:
+        cached = load_transcription_cache(f"file:{url}")
+    if not cached:
+        return jsonify({"success": False, "error": "未找到缓存的转写结果，请重新转写"}), 404
+
+    transcription, metadata = cached
+
+    def generate():
+        q = queue.Queue()
+
+        def _worker():
+            try:
+                q.put(sse_event({"stage": "summarizing", "text": "正在重新生成 AI 总结..."}))
+                summary = summarize_with_llm(transcription["full_text"])
+
+                # 更新 docs 目录中的总结文件
+                try:
+                    docs_dir = get_docs_dir()
+                    safe_title = (metadata.get("title") or "untitled").replace("/", "_").replace("\\", "_")[:50]
+                    with open(os.path.join(docs_dir, f"{safe_title}_summary.md"), "w", encoding="utf-8") as f:
+                        f.write(f"# {metadata.get('title', '')} - AI 总结\n\n{summary}\n")
+                except Exception:
+                    pass
+
+                q.put(sse_event({
+                    "stage": "complete",
+                    "data": {"success": True, "summary": summary},
+                }))
+            except Exception as e:
+                q.put(sse_event({"stage": "error", "error": str(e)}))
+            finally:
+                q.put(None)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+        while True:
+            event = q.get()
+            if event is None:
+                break
+            yield event
+
+    return Response(stream_with_context(generate()), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.route("/api/config", methods=["GET"])

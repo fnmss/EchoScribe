@@ -31,3 +31,5 @@ docs/
 ./txt
 
 downloads/
+
+.cache/
