@@ -1020,6 +1020,7 @@ def api_transcribe_url():
     """通过 URL 转写音视频（SSE 流式进度）。"""
     data = request.get_json()
     url = data.get("url", "").strip()
+    prompt_type = data.get("prompt_type", "default")
 
     if not url:
         return jsonify({"success": False, "error": "请输入 URL"}), 400
@@ -1117,7 +1118,7 @@ def api_transcribe_url():
                 }))
                 summary = ""
                 try:
-                    summary = summarize_with_llm(transcription["full_text"])
+                    summary = summarize_with_llm(transcription["full_text"], prompt_type)
                 except Exception as e:
                     summary = f"AI 总结失败: {e}"
 
@@ -1199,6 +1200,8 @@ def api_transcribe_file():
     if not file or file.filename == "":
         return jsonify({"success": False, "error": "请上传文件"}), 400
 
+    prompt_type = request.form.get("prompt_type", "default")
+
     tmpdir = tempfile.mkdtemp(prefix="funasr_web_")
     ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "wav"
     upload_path = os.path.join(tmpdir, f"upload.{ext}")
@@ -1259,7 +1262,7 @@ def api_transcribe_file():
             })
             summary = ""
             try:
-                summary = summarize_with_llm(transcription["full_text"])
+                summary = summarize_with_llm(transcription["full_text"], prompt_type)
             except Exception as e:
                 summary = f"AI 总结失败: {e}"
 
@@ -1335,11 +1338,34 @@ def api_deepen():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@app.route("/api/custom-summary", methods=["POST"])
+def api_custom_summary():
+    """使用自定义 prompt 重新总结转写内容。"""
+    data = request.get_json()
+    custom_prompt = data.get("prompt", "").strip()
+    full_text = data.get("full_text", "").strip()
+
+    if not custom_prompt:
+        return jsonify({"success": False, "error": "请输入自定义指令"}), 400
+    if not full_text:
+        return jsonify({"success": False, "error": "缺少转写文本"}), 400
+
+    text = truncate_text(full_text)
+    prompt = f"{custom_prompt}\n\n以下是转写内容：\n{text}"
+
+    try:
+        result = call_llm(prompt)
+        return jsonify({"success": True, "summary": result})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/retry-summary", methods=["POST"])
 def api_retry_summary():
     """重试 AI 总结，使用缓存的转写结果。"""
     data = request.get_json()
     url = data.get("url", "").strip()
+    prompt_type = data.get("prompt_type", "default")
     if not url:
         return jsonify({"success": False, "error": "缺少 URL"}), 400
 
@@ -1357,7 +1383,7 @@ def api_retry_summary():
         def _worker():
             try:
                 q.put(sse_event({"stage": "summarizing", "text": "正在重新生成 AI 总结..."}))
-                summary = summarize_with_llm(transcription["full_text"])
+                summary = summarize_with_llm(transcription["full_text"], prompt_type)
 
                 # 更新 docs 目录中的总结文件
                 try:

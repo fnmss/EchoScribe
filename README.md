@@ -101,6 +101,8 @@ python app.py
 
 ### 命令行工具
 
+#### 单个 URL 转写
+
 ```bash
 python transcribe_url.py "https://www.bilibili.com/video/BVxxxxxxx"
 ```
@@ -115,10 +117,64 @@ python transcribe_url.py "URL" -o output.txt
 python transcribe_url.py "URL" --device cuda
 
 # 处理 B站多P视频
-python transcribe_url.py "URL" --all-parts
+python transcribe_url.py "URL" --part 2
 
-# 指定浏览器 cookies（用于需要登录的视频）
-python transcribe_url.py "URL" --cookies chrome
+# 指定 cookies 文件（用于需要登录的视频）
+python transcribe_url.py "URL" --cookies D:\cookies.txt
+
+# 指定代理
+python transcribe_url.py "URL" --proxy socks5://127.0.0.1:7890
+```
+
+#### 批量阻塞转写并生成 Markdown 总结
+
+创建一个任务清单文件，例如 `tasks.txt`：
+
+```txt
+# 空行和 # 开头的注释会被忽略
+https://www.bilibili.com/video/BVxxxxxxx
+https://www.youtube.com/watch?v=xxxxxxx
+D:\Videos\meeting.mp4
+D:\Audios\recording.m4a
+```
+
+运行批量任务：
+
+```bash
+python transcribe_url.py --batch tasks.txt --output-dir docs
+```
+
+也可以直接处理一个本地文件夹中的音视频文件：
+
+```bash
+python transcribe_url.py --input-dir D:\downloads --output-dir docs
+```
+
+`--input-dir` 会扫描该目录下的常见音视频文件（如 `.mp3`、`.wav`、`.m4a`、`.mp4`、`.mkv`、`.mov`、`.flac`、`.webm`），并按文件名顺序逐个处理。
+
+批量模式会按顺序阻塞处理每一项任务。每个任务可以是 URL、本地音视频文件路径，也可以来自 `--input-dir` 扫描出的本地文件。成功后会在输出目录生成：
+
+```txt
+标题_transcription.txt   # 带时间戳的转写原文
+标题_summary.md          # AI 生成的 Markdown 总结
+batch_report.json        # 批处理报告：成功、失败、耗时、输出文件路径等
+```
+
+如果文件名重复，会自动追加序号，例如 `标题_2_transcription.txt`、`标题_2_summary.md`。
+
+批量任务中某一项失败不会中断后续任务；失败原因会写入 `batch_report.json`。如果转写成功但 AI 总结失败，会保留 `.txt` 转写文件，并在报告中标记为 `summary_failed`。
+
+批量模式常用参数：
+
+```bash
+# 使用长视频总结 Prompt
+python transcribe_url.py --batch tasks.txt --output-dir docs --prompt-type long
+
+# 指定 cookies 文件
+python transcribe_url.py --batch tasks.txt --output-dir docs --cookies D:\cookies.txt
+
+# 指定代理
+python transcribe_url.py --batch tasks.txt --output-dir docs --proxy socks5://127.0.0.1:7890
 ```
 
 查看全部参数：

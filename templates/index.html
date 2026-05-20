@@ -47,6 +47,16 @@
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                     文件上传
                 </button>
+                <div class="skill-switcher">
+                    <label class="skill-option">
+                        <input type="radio" name="prompt-type" value="default" checked>
+                        <span>通用总结</span>
+                    </label>
+                    <label class="skill-option">
+                        <input type="radio" name="prompt-type" value="long">
+                        <span>长视频总结</span>
+                    </label>
+                </div>
             </div>
 
             <div class="tab-content active" id="tab-url">
@@ -171,6 +181,10 @@
                                 <input type="text" id="deepen-input" placeholder="对转写内容追问更多细节..." />
                                 <button class="btn-primary btn-sm" id="deepen-submit">追问</button>
                             </div>
+                            <div class="deepen-input-row" style="margin-top: 0.5rem;">
+                                <input type="text" id="custom-summary-input" placeholder="输入自定义指令重新总结，如：用英文总结、只列出要点..." />
+                                <button class="btn-primary btn-sm" id="custom-summary-submit">自定义总结</button>
+                            </div>
                             <div class="deepen-loading" id="deepen-loading" style="display:none;">
                                 <div class="mini-spinner"></div>
                                 <span>AI 思考中...</span>
@@ -203,8 +217,11 @@
                                 <button class="icon-btn" id="mindmap-fullscreen" title="全屏">
                                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
                                 </button>
-                                <button class="icon-btn" id="export-mindmap" title="导出思维导图">
+                                <button class="icon-btn" id="export-mindmap" title="导出 SVG">
                                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                </button>
+                                <button class="icon-btn" id="export-mindmap-jpg" title="导出 JPG">
+                                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
                                 </button>
                                 <button class="icon-btn" id="open-svg" title="打开本地 SVG">
                                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 19a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h4l2 3h9a2 2 0 0 1 2 2v1"/><path d="M9 17h10.5a1.5 1.5 0 0 0 1.46-1.18l1.5-6A1.5 1.5 0 0 0 19.5 8H14l-1.5 3"/></svg>

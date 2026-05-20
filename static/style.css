@@ -1169,3 +1169,31 @@ body {
     opacity: 0.6;
     cursor: not-allowed;
 }
+
+/* Skill switcher */
+.skill-switcher {
+    display: flex;
+    gap: 0.25rem;
+    margin-left: auto;
+    background: rgba(255,255,255,0.06);
+    border-radius: 8px;
+    padding: 3px;
+}
+.skill-option {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.3rem 0.7rem;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    transition: all 0.2s;
+}
+.skill-option:has(input:checked) {
+    background: rgba(99,102,241,0.2);
+    color: var(--text-primary);
+}
+.skill-option input[type="radio"] {
+    display: none;
+}

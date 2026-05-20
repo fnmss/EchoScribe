@@ -399,7 +399,7 @@ async function retrySummary() {
 
     try {
         let newSummary = null;
-        await fetchSSE("/api/retry-summary", { url }, (event) => {
+        await fetchSSE("/api/retry-summary", { url, prompt_type: getPromptType() }, (event) => {
             if (event.stage === "error") {
                 throw new Error(event.error);
             } else if (event.stage === "complete") {
@@ -704,6 +704,65 @@ document.getElementById("deepen-input").addEventListener("keydown", (e) => {
 });
 
 // ============================================================
+// Custom summary - re-summarize with user prompt
+// ============================================================
+document.getElementById("custom-summary-submit").addEventListener("click", async () => {
+    const input = document.getElementById("custom-summary-input");
+    const prompt = input.value.trim();
+    if (!prompt) return;
+    if (!lastResultData || !lastResultData.transcription) return;
+
+    const btn = document.getElementById("custom-summary-submit");
+    const loading = document.getElementById("deepen-loading");
+    const resultsEl = document.getElementById("deepen-results");
+
+    btn.disabled = true;
+    loading.style.display = "flex";
+
+    try {
+        const resp = await fetch("/api/custom-summary", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                prompt: prompt,
+                full_text: lastResultData.transcription.full_text,
+            }),
+        });
+        const data = await resp.json();
+
+        if (data.success) {
+            const div = document.createElement("div");
+            div.className = "deepen-item";
+            div.innerHTML = `
+                <div class="deepen-q"><strong>自定义总结:</strong> ${escapeHtml(prompt)}</div>
+                <div class="markdown-body">${renderMarkdown(data.summary)}</div>
+            `;
+            resultsEl.prepend(div);
+            input.value = "";
+        } else {
+            const div = document.createElement("div");
+            div.className = "deepen-item";
+            div.innerHTML = `<div style="color:#dc2626;">错误：${escapeHtml(data.error)}</div>`;
+            resultsEl.prepend(div);
+        }
+    } catch (err) {
+        const div = document.createElement("div");
+        div.className = "deepen-item";
+        div.innerHTML = `<div style="color:#dc2626;">请求失败：${escapeHtml(err.message)}</div>`;
+        resultsEl.prepend(div);
+    } finally {
+        btn.disabled = false;
+        loading.style.display = "none";
+    }
+});
+
+document.getElementById("custom-summary-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+        document.getElementById("custom-summary-submit").click();
+    }
+});
+
+// ============================================================
 // URL form submit (SSE)
 // ============================================================
 document.getElementById("url-form").addEventListener("submit", async (e) => {
@@ -718,7 +777,7 @@ document.getElementById("url-form").addEventListener("submit", async (e) => {
 
     try {
         let resultData = null;
-        await fetchSSE("/api/transcribe-url", { url }, (event) => {
+        await fetchSSE("/api/transcribe-url", { url, prompt_type: getPromptType() }, (event) => {
             console.log("[SSE] received:", event.stage, event);
             if (event.stage === "error") {
                 throw new Error(event.error);
@@ -760,6 +819,7 @@ document.getElementById("file-form").addEventListener("submit", async (e) => {
 
     const formData = new FormData();
     formData.append("file", file);
+    formData.append("prompt_type", getPromptType());
 
     try {
         let resultData = null;
@@ -915,6 +975,10 @@ function getExportSettings() {
     return { format, prefix };
 }
 
+function getPromptType() {
+    return document.querySelector('input[name="prompt-type"]:checked')?.value || "default";
+}
+
 function downloadFile(content, filename, mimeType) {
     const blob = new Blob([content], { type: mimeType });
     const url = URL.createObjectURL(blob);
@@ -998,6 +1062,66 @@ function exportMindMap() {
     downloadFile(svgWithNs, filename, "image/svg+xml;charset=utf-8");
 }
 
+function exportMindMapAsJpg() {
+    const svg = document.querySelector("#mindmap-container svg");
+    if (!svg) return;
+    const { prefix } = getExportSettings();
+    const title = lastResultData?.metadata?.title || "untitled";
+    const safeTitle = title.replace(/[\\/:*?"<>|]/g, "_").substring(0, 50);
+    const filename = `${prefix}_mindmap_${safeTitle}.jpg`;
+
+    // Clone SVG to avoid mutating the live DOM
+    const cloned = svg.cloneNode(true);
+    // Ensure explicit dimensions (markmap often only has viewBox)
+    const vb = cloned.getAttribute("viewBox");
+    let w = parseFloat(cloned.getAttribute("width"));
+    let h = parseFloat(cloned.getAttribute("height"));
+    if ((!w || !h) && vb) {
+        const parts = vb.split(/[\s,]+/).map(Number);
+        w = parts[2];
+        h = parts[3];
+    }
+    if (!w || !h) {
+        const rect = svg.getBoundingClientRect();
+        w = rect.width || 1200;
+        h = rect.height || 800;
+    }
+    cloned.setAttribute("width", w);
+    cloned.setAttribute("height", h);
+
+    const svgData = new XMLSerializer().serializeToString(cloned);
+    const svgWithNs = svgData.includes('xmlns="http://www.w3.org/2000/svg"')
+        ? svgData
+        : svgData.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
+
+    const scale = 2;
+    const canvas = document.createElement("canvas");
+    canvas.width = w * scale;
+    canvas.height = h * scale;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    const img = new Image();
+    img.onerror = () => alert("JPG 导出失败：SVG 渲染出错");
+    img.onload = () => {
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        URL.revokeObjectURL(img.src);
+        canvas.toBlob((jpgBlob) => {
+            if (!jpgBlob) { alert("JPG 导出失败"); return; }
+            const a = document.createElement("a");
+            a.href = URL.createObjectURL(jpgBlob);
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(a.href);
+        }, "image/jpeg", 0.92);
+    };
+    const blob = new Blob([svgWithNs], { type: "image/svg+xml;charset=utf-8" });
+    img.src = URL.createObjectURL(blob);
+}
+
 function openLocalSvg() {
     const input = document.createElement("input");
     input.type = "file";
@@ -1054,6 +1178,7 @@ function openLocalSvg() {
 document.getElementById("export-summary").addEventListener("click", exportSummary);
 document.getElementById("export-transcription").addEventListener("click", exportTranscription);
 document.getElementById("export-mindmap").addEventListener("click", exportMindMap);
+document.getElementById("export-mindmap-jpg").addEventListener("click", exportMindMapAsJpg);
 document.getElementById("open-svg").addEventListener("click", openLocalSvg);
 
 // ============================================================
