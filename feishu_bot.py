@@ -212,7 +212,7 @@ def run_pipeline(client, message_id, url, config, need_text=True, need_summary=T
         # Step 4: 回传结果
         if need_summary and summary:
             mode_label = "长视频总结" if is_long else "总结"
-            reply_post(client, message_id, f"📄 {title}（{mode_label}）", summary)
+            # reply_post(client, message_id, f"📄 {title}（{mode_label}）", summary)
             if md_path:
                 file_key = upload_file(client, md_path)
                 if file_key:
